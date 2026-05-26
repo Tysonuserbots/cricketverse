@@ -162,13 +162,13 @@ def register_delivery_use(match: Match, style: str, code: int) -> None:
         match.over_state["consecutive"] = 1
     if delivery.bouncer:
         match.over_state["bouncers"] = int(match.over_state["bouncers"]) + 1
-    if delivery.hard:
+    if delivery.hard or delivery.bouncer:
         match.over_state["hard_slots"] = int(match.over_state["hard_slots"]) + 1
 
 
 def hard_ball_forces_miss_logic(match: Match, style: str, code: int) -> bool:
     delivery = DELIVERIES_BY_STYLE[style][code]
-    return delivery.hard and int(match.over_state["hard_slots"]) <= 3
+    return (delivery.hard or delivery.bouncer) and int(match.over_state["hard_slots"]) <= 3
 
 
 def score_runs_for_ball(match: Match, style: str, code: int, length: str, batter_run: int, ok: bool) -> int:

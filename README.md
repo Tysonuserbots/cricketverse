@@ -9,6 +9,8 @@ A Python Telegram bot for the Cricket Verse ball data and match flow you describ
 - Random captain toss winner, bat/bowl choice, team names, player add/remove/select flow.
 - `/myteam` works only for captains during an active match and shows only that captain's own team.
 - Start stays locked until both teams have equal players and the starting batter/bowler are selected.
+- `/add` lets captains add a replied, tagged, or numeric-id player to their own team.
+- Match start needs group admin approval after both captains press Start.
 - Pacer and spinner delivery data, batter run + length selection, hard-ball logic, bouncer limit, extras, spam protocol, wickets, catch guesses, run outs, over changes, innings switch, target chase.
 - SQLite database stores player career stats and completed match snapshots.
 - `/howplayed <telegram_id>` summarizes saved stats with Gemini when `GEMINI_API_KEY` is set.
@@ -69,6 +71,7 @@ Free Render storage is temporary. With `DATABASE_PATH=/tmp/cricket_verse.sqlite3
 
 - `/playmatch 5` - start a 5-over match.
 - `/myteam` - captain team controls.
+- `/add <telegram_id> <name>` - captain-only quick add; also works when replying to or tagging a Telegram user.
 - `/howplayed 123456789` - Gemini/stat summary for a Telegram user id.
 - Reply to a player and ask `how did he play?` - AI answers from the database and live match state.
 - Ask `stats @username` or `what is 123456789 performance?` - AI answers for that player if they exist in the database.
@@ -81,6 +84,7 @@ Free Render storage is temporary. With `DATABASE_PATH=/tmp/cricket_verse.sqlite3
 3. Batter selects a run.
 4. Batter selects a length guess: Full, Yorker, Good, Short, and Bouncer when that delivery can be a bouncer.
 5. If the batter length matches the actual length, the batter gets the selected run. If it misses, MLR/hard-ball/wicket rules decide the result.
+6. For the first 3 hard balls in an over, length miss gives miss-length runs. Bouncers count toward that hard-ball cap.
 
 ## Notes
 

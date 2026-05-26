@@ -51,9 +51,9 @@ async def summarize_player(api_key: str | None, model: str, stats: dict[str, Any
 
     prompt = f"""
 You are the Cricket Verse match analyst. Explain how this Telegram cricket player has played.
-Use friendly, funny Hinglish/English cricket style with light banter, but keep the cricket analysis useful.
+Use funny English cricket style with light playful roast energy, but keep the cricket analysis useful.
 Give a complete answer covering batting, bowling, fielding, recent form, and one improvement tip.
-Do not invent numbers. Do not stop midway.
+Do not use Hinglish or any non-English language. Do not invent numbers. Do not stop midway.
 
 Career stats JSON:
 {json.dumps(stats, indent=2)}
@@ -83,9 +83,9 @@ async def answer_player_question(
 You are the Cricket Verse Telegram match analyst.
 Answer the user's exact question about the tagged/replied player using ONLY the database/live-match data below.
 If the data is missing, say that clearly. Give a complete, friendly, cricket-focused answer.
-Use funny Hinglish/English cricket banter when it fits, but do not roast harshly.
+Use funny English cricket banter when it fits, with playful roast energy, but do not roast harshly.
 Do not invent stats, names, wickets, scores, or match events.
-Do not stop midway or end with an unfinished sentence.
+Do not use Hinglish or any non-English language. Do not stop midway or end with an unfinished sentence.
 
 User question:
 {question}

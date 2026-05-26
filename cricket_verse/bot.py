@@ -71,6 +71,20 @@ def captain_ids(match: Match) -> list[int]:
     return [int(team["captain_id"]) for team in match.teams.values() if team.get("captain_id")]
 
 
+def update_match_player_name(match: Match, user: Any) -> None:
+    name = user_label(user)
+    user_id = int(user.id)
+    for cap in match.captains.values():
+        if int(cap["id"]) == user_id:
+            cap["name"] = name
+    for team in match.teams.values():
+        for player in team["players"]:
+            if int(player["id"]) == user_id:
+                player["name"] = name
+                if str(user_id) in match.match_stats:
+                    match.match_stats[str(user_id)]["name"] = name
+
+
 def other_team(team_key: str) -> str:
     return "B" if team_key == "A" else "A"
 
@@ -106,6 +120,10 @@ def toss_markup() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         [[InlineKeyboardButton("Bat", callback_data="toss:bat"), InlineKeyboardButton("Bowl", callback_data="toss:bowl")]]
     )
+
+
+def admin_approval_markup() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([[InlineKeyboardButton("Admin Approve Start", callback_data="admin_start")]])
 
 
 def team_menu_markup(match: Match, team_key: str, cap_id: int) -> InlineKeyboardMarkup:
@@ -332,6 +350,8 @@ async def myteam(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not match:
         await update.message.reply_text("/myteam works only when there is an active match.")
         return
+    update_match_player_name(match, update.effective_user)
+    db(context).save_match(match)
     team_key = captain_team(match, update.effective_user.id)
     if not team_key:
         await update.message.reply_text("Only captains can use /myteam.")
@@ -340,6 +360,39 @@ async def myteam(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         team_roster_text(match, team_key),
         reply_markup=team_menu_markup(match, team_key, update.effective_user.id),
     )
+
+
+async def add_player(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not update.effective_chat or not update.effective_user or not update.message:
+        return
+    match = active_match(context, update.effective_chat.id)
+    if not match:
+        await update.message.reply_text("/add works only when there is an active match.")
+        return
+    team_key = captain_team(match, update.effective_user.id)
+    if not team_key:
+        await update.message.reply_text("Only captains can use /add.")
+        return
+
+    player_id, display_name = resolve_player_from_message(update, context, update.message.text or "")
+    if not player_id:
+        await update.message.reply_text("Reply to a player, tag a Telegram user, or use /add <telegram_id> <name>.")
+        return
+    if get_player(match, player_id):
+        player = get_player(match, player_id)
+        if player:
+            player["name"] = display_name
+        await update.message.reply_text(f"{display_name} is already in this match. Name refreshed.")
+        db(context).save_match(match)
+        await save_and_show_setup(context, match)
+        return
+
+    match.teams[team_key]["players"].append(new_player(player_id, display_name))
+    db(context).upsert_manual_player(player_id, display_name)
+    ensure_match_player_stats(match)
+    reset_ready(match)
+    await update.message.reply_text(f"Added {display_name} to {team_name(match, team_key)}.")
+    await save_and_show_setup(context, match)
 
 
 async def howplayed(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -540,13 +593,19 @@ async def text_messages(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         return
     db(context).upsert_user(update.effective_user)
 
-    lower = text.lower()
     match = active_match(context, update.effective_chat.id)
+    if match:
+        update_match_player_name(match, update.effective_user)
 
     if match:
         action = match.pending_action.get(str(update.effective_user.id))
         if action:
             if action["type"] == "team_name":
+                reply = update.message.reply_to_message
+                bot_id = getattr(context.bot, "id", None)
+                if not reply or not reply.from_user or int(reply.from_user.id) != int(bot_id or 0):
+                    await update.message.reply_text("Reply to the bot's team-name message so I know this is the official team name.")
+                    return
                 team_key = action["team"]
                 match.teams[team_key]["name"] = text[:40]
                 match.pending_action.pop(str(update.effective_user.id), None)
@@ -567,7 +626,7 @@ async def text_messages(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
             if action["type"] == "add":
                 team_key = action["team"]
-                player_id, display_name = resolve_player_input(context, text)
+                player_id, display_name = resolve_player_from_message(update, context, text)
                 if not player_id:
                     await update.message.reply_text(
                         "Send a numeric Telegram id, or a @username that already exists in the bot database."
@@ -580,12 +639,35 @@ async def text_messages(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
                 db(context).upsert_manual_player(player_id, display_name)
                 match.pending_action.pop(str(update.effective_user.id), None)
                 ensure_match_player_stats(match)
+                reset_ready(match)
                 await update.message.reply_text(f"Added {display_name} to {team_name(match, team_key)}.")
                 await save_and_show_setup(context, match)
                 return
 
     if await maybe_answer_player_question(update, context, match, text):
         return
+
+
+def resolve_player_from_message(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str) -> tuple[int | None, str]:
+    message = update.message
+    if message and message.reply_to_message and message.reply_to_message.from_user:
+        user = message.reply_to_message.from_user
+        db(context).upsert_user(user)
+        return int(user.id), user_label(user)
+
+    if message:
+        for entity in message.entities or []:
+            if getattr(entity, "type", "") == "text_mention" and getattr(entity, "user", None):
+                user = entity.user
+                db(context).upsert_user(user)
+                return int(user.id), user_label(user)
+            if getattr(entity, "type", "") == "text_link":
+                link_match = re.search(r"tg://user\?id=(\d+)", getattr(entity, "url", "") or "")
+                if link_match:
+                    player_id = int(link_match.group(1))
+                    return player_id, f"Player {player_id}"
+
+    return resolve_player_input(context, text)
 
 
 def resolve_player_input(context: ContextTypes.DEFAULT_TYPE, text: str) -> tuple[int | None, str]:
@@ -614,6 +696,7 @@ async def callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not match:
         await query.answer("No active match.", show_alert=True)
         return
+    update_match_player_name(match, update.effective_user)
 
     if data == "join":
         await handle_join(update, context, match)
@@ -632,6 +715,8 @@ async def callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await handle_style(update, context, match, int(player_id), style)
     elif data.startswith("ready:"):
         await handle_ready(update, context, match, int(data.split(":")[1]))
+    elif data == "admin_start":
+        await handle_admin_start(update, context, match)
     elif data.startswith("bowl:"):
         await handle_bowl(update, context, match, int(data.split(":")[1]))
     elif data.startswith("bat:"):
@@ -712,9 +797,8 @@ async def handle_team_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, m
         match.pending_action[str(user.id)] = {"type": "add", "team": team_key}
         db(context).save_match(match)
         await query.message.reply_text(
-            "Reply with a numeric Telegram id and optional name, for example:\n"
-            "123456789 Virat\n\n"
-            "A @username also works if that user already interacted with the bot."
+            "Reply to a player, tag a Telegram user, or send a numeric Telegram id.\n"
+            "You can also use: /add <telegram_id> <name>"
         )
     elif action == "remove":
         await query.message.reply_text(f"Remove from {team_name(match, team_key)}:", reply_markup=remove_markup(match, team_key))
@@ -825,6 +909,31 @@ async def handle_style(update: Update, context: ContextTypes.DEFAULT_TYPE, match
     await maybe_resume_after_selection(context, match)
 
 
+async def is_chat_admin(context: ContextTypes.DEFAULT_TYPE, chat_id: int, user_id: int) -> bool:
+    try:
+        member = await context.bot.get_chat_member(chat_id, user_id)
+    except TelegramError:
+        return False
+    return member.status in {"administrator", "creator"}
+
+
+async def handle_admin_start(update: Update, context: ContextTypes.DEFAULT_TYPE, match: Match) -> None:
+    query = update.callback_query
+    user = update.effective_user
+    if not query or not user:
+        return
+    if match.phase != "awaiting_admin_approval":
+        await query.answer("Admin approval is not needed right now.", show_alert=True)
+        return
+    if not await is_chat_admin(context, match.chat_id, user.id):
+        await query.answer("Only a group admin can approve the match start.", show_alert=True)
+        return
+    match.phase = "playing"
+    await query.message.reply_text(f"Admin {user_label(user)} approved the start. Game on.")
+    await edit_main(context, match, scoreboard(match), bowling_markup(match))
+    db(context).save_match(match)
+
+
 async def handle_ready(update: Update, context: ContextTypes.DEFAULT_TYPE, match: Match, cap_id: int) -> None:
     query = update.callback_query
     user = update.effective_user
@@ -841,8 +950,12 @@ async def handle_ready(update: Update, context: ContextTypes.DEFAULT_TYPE, match
         return
     match.ready[str(cap_id)] = True
     if all(match.ready.get(str(cid)) for cid in captain_ids(match)):
-        match.phase = "playing"
-        await edit_main(context, match, scoreboard(match), bowling_markup(match))
+        match.phase = "awaiting_admin_approval"
+        await edit_main(context, match, scoreboard(match), admin_approval_markup())
+        await query.message.reply_text(
+            "Both captains pressed Start. Waiting for a group admin to approve the match start.",
+            reply_markup=admin_approval_markup(),
+        )
     else:
         await save_and_show_setup(context, match)
     db(context).save_match(match)
@@ -1032,6 +1145,8 @@ def event_commentary(match: Match, result: dict[str, Any]) -> str | None:
                 f"That's out. {wicket_type}, and the innings takes a sharp turn.",
                 f"{wicket_type}! The bowling side erupts after a decisive delivery.",
                 f"{wicket_type}! The batter's plan has left the group chat.",
+                f"{wicket_type}! The batter read that like a terms-and-conditions page.",
+                f"{wicket_type}! That shot had ambition, not permission.",
             ]
         )
 
@@ -1245,6 +1360,7 @@ def run() -> None:
     application.add_handler(CommandHandler("playmatch", playmatch))
     application.add_handler(CommandHandler("cancelmatch", cancelmatch))
     application.add_handler(CommandHandler("myteam", myteam))
+    application.add_handler(CommandHandler("add", add_player))
     application.add_handler(CommandHandler("howplayed", howplayed))
     application.add_handler(CallbackQueryHandler(callbacks))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_messages))
