@@ -1,0 +1,2 @@
+"""Cricket Verse Telegram bot."""
+

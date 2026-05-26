@@ -1,0 +1,22 @@
+services:
+  - type: web
+    name: cricket-verse-bot
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: python main.py
+    envVars:
+      - key: RUN_MODE
+        value: webhook
+      - key: PYTHON_VERSION
+        value: 3.12.8
+      - key: WEBHOOK_PATH
+        value: telegram-webhook
+      - key: DATABASE_PATH
+        value: /tmp/cricket_verse.sqlite3
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: GEMINI_MODEL
+        value: gemini-flash-latest
