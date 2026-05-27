@@ -122,6 +122,9 @@ def miss_runs(style: str, code: int, length: str, batter_run: int) -> int:
     legal = [run for run in delivery.mlr[length] if run != int(batter_run)]
     if not legal:
         legal = list(delivery.mlr[length])
+    positive = [run for run in legal if run > 0]
+    if positive:
+        legal = positive
     weights = {run: MISS_RUN_WEIGHTS.get(run, 1) for run in legal}
     return int(weighted_choice(weights))
 
@@ -138,7 +141,7 @@ def next_extra(match: Match, style: str, code: int) -> str | None:
     if consecutive_after >= 3:
         return "no_ball" if random.randint(1, 100) <= 70 else None
     if consecutive_after == 2:
-        return "wide" if random.randint(1, 100) <= 30 else None
+        return "wide" if random.randint(1, 100) <= 20 else None
 
     roll = random.randint(1, 100)
     if roll <= delivery.wide_pct:
@@ -190,12 +193,10 @@ def wicket_check(match: Match, style: str, code: int, length_ok: bool, batter_ru
         if length_ok:
             if roll <= 30:
                 return {"kind": "direct", "wicket_type": random.choice(HARD_WICKET_TYPES)}
-            if roll <= 90:
-                return {"kind": "none"}
-            return {"kind": "run_out"}
-        if roll <= 60:
+            return {"kind": "none"}
+        if roll <= 50:
             return {"kind": "direct", "wicket_type": random.choice(HARD_WICKET_TYPES)}
-        if roll <= 90:
+        if roll <= 80:
             return {"kind": "catch", "catch_type": 1}
         return {"kind": "run_out"}
 
@@ -423,6 +424,9 @@ def resolve_pending_delivery(match: Match) -> dict[str, Any]:
         }
 
     if wicket["kind"] == "direct":
+        batter_id = int(match.current_batter_id or 0)
+        bowler_id = int(match.current_bowler_id or 0)
+        batting_team = match.batting_team
         token_map = {"Bowled": "W(b)", "LBW": "W(lbw)", "Stumped": "W(st)", "Catch Out": "W(c)"}
         apply_ball(
             match,
@@ -439,6 +443,10 @@ def resolve_pending_delivery(match: Match) -> dict[str, Any]:
             "length": length,
             "batter_length": batter_length,
             "length_ok": length_ok,
+            "reviewable": wicket["wicket_type"] in {"LBW", "Stumped"},
+            "drs_team": batting_team,
+            "batter_id": batter_id,
+            "bowler_id": bowler_id,
         }
 
     apply_ball(match, bat_runs=bat_runs, legal=True, timeline_token=str(bat_runs))
@@ -493,3 +501,106 @@ def finish_catch(match: Match, guess: int | None) -> dict[str, Any]:
     match.pending_delivery = None
     match.phase = "playing"
     return result
+
+
+def reset_drs_reviews(match: Match) -> None:
+    match.drs_reviews = {"A": 2, "B": 2}
+    match.pending_drs = None
+
+
+def restore_reviewed_wicket(match: Match, review: dict[str, Any]) -> None:
+    batter_id = int(review.get("batter_id") or 0)
+    bowler_id = int(review.get("bowler_id") or 0)
+    wicket_type = str(review.get("wicket_type") or "")
+    match.score["wickets"] = max(0, int(match.score.get("wickets", 0)) - 1)
+    if match.score.get("timeline"):
+        match.score["timeline"][-1] = "0"
+    if match.score.get("over_events"):
+        match.score["over_events"][-1] = "0"
+    if batter_id and str(batter_id) in match.match_stats:
+        batting = match.match_stats[str(batter_id)]["batting"]
+        batting["out"] = False
+        batting["dismissal"] = None
+    player = get_player(match, batter_id)
+    if player:
+        player["out"] = False
+    if bowler_id and wicket_type != "Run Out" and str(bowler_id) in match.match_stats:
+        bowling = match.match_stats[str(bowler_id)]["bowling"]
+        bowling["wickets"] = max(0, int(bowling.get("wickets", 0)) - 1)
+    if batter_id:
+        match.current_batter_id = batter_id
+    match.score["last_delivery"] = f"{match.score.get('last_delivery', 'Delivery')} - DRS overturned"
+
+
+def decide_drs(match: Match) -> dict[str, Any]:
+    review = match.pending_drs or {}
+    team_key = str(review.get("team_key") or "")
+    if not team_key:
+        return {"status": "none"}
+    upheld = random.randint(1, 100) <= 70
+    if upheld:
+        match.drs_reviews[team_key] = max(0, int(match.drs_reviews.get(team_key, 0)) - 1)
+        match.pending_drs = None
+        return {
+            "status": "upheld",
+            "team_key": team_key,
+            "reviews_left": int(match.drs_reviews.get(team_key, 0)),
+            "result": review.get("result", {}),
+        }
+    restore_reviewed_wicket(match, review)
+    match.pending_drs = None
+    result = dict(review.get("result", {}))
+    result["status"] = "drs_overturned"
+    return {
+        "status": "overturned",
+        "team_key": team_key,
+        "reviews_left": int(match.drs_reviews.get(team_key, 0)),
+        "result": result,
+    }
+
+
+def player_impact_score(stats: dict[str, Any], winning_team: str | None) -> float:
+    batting = stats.get("batting", {})
+    bowling = stats.get("bowling", {})
+    fielding = stats.get("fielding", {})
+    score = float(batting.get("runs", 0))
+    score += float(batting.get("fours", 0)) * 2
+    score += float(batting.get("sixes", 0)) * 3
+    score += float(bowling.get("wickets", 0)) * 25
+    score -= float(bowling.get("runs", 0)) * 0.2
+    score += float(fielding.get("catches", 0)) * 12
+    score += float(fielding.get("runouts", 0)) * 15
+    score -= float(fielding.get("drops", 0)) * 4
+    if stats.get("team") == winning_team:
+        score += 15
+    return score
+
+
+def select_player_of_match(match: Match, winning_team: str | None) -> dict[str, Any] | None:
+    ensure_match_player_stats(match)
+    best_id: str | None = None
+    best_score = -9999.0
+    for pid, stats in match.match_stats.items():
+        score = player_impact_score(stats, winning_team)
+        if score > best_score:
+            best_id = pid
+            best_score = score
+    if best_id is None:
+        return None
+    stats = match.match_stats[best_id]
+    batting = stats.get("batting", {})
+    bowling = stats.get("bowling", {})
+    fielding = stats.get("fielding", {})
+    reasons = [
+        f"{batting.get('runs', 0)} runs",
+        f"{bowling.get('wickets', 0)} wicket(s)",
+        f"{fielding.get('catches', 0)} catch(es)",
+        f"{fielding.get('runouts', 0)} run out(s)",
+    ]
+    return {
+        "id": int(best_id),
+        "name": stats.get("name", best_id),
+        "team": stats.get("team"),
+        "impact_score": round(best_score, 2),
+        "reason": ", ".join(reasons),
+    }

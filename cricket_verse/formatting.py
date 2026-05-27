@@ -163,6 +163,75 @@ def match_summary(match: Match, result: str) -> dict[str, Any]:
     return {
         "result": result,
         "overs": match.overs,
+        "teams": {
+            key: {
+                "name": team_name(match, key),
+                "captain_id": match.teams[key].get("captain_id"),
+                "players": match.teams[key].get("players", []),
+            }
+            for key in match.teams
+        },
         "innings_history": match.innings_history,
         "players": match.match_stats,
+        "player_of_match": match.player_of_match,
     }
+
+
+def player_of_match_text(match: Match) -> str:
+    pom = match.player_of_match or {}
+    if not pom:
+        return "Player of the Match: not available."
+    return f"Player of the Match: {pom.get('name')} - {pom.get('reason')}"
+
+
+def completed_match_text(record: dict[str, Any]) -> str:
+    summary = record["summary"]
+    lines = [
+        f"Match #{record['id']}",
+        summary.get("result", "Result not recorded"),
+        f"Saved: {record.get('created_at')}",
+        "",
+    ]
+    for innings in summary.get("innings_history", []):
+        lines.append(
+            f"Innings {innings.get('innings')}: {innings.get('team')} "
+            f"{innings.get('runs')}/{innings.get('wickets')} ({overs_text(int(innings.get('balls', 0)))})"
+        )
+    pom = summary.get("player_of_match") or {}
+    if pom:
+        lines.extend(["", f"Player of the Match: {pom.get('name')} - {pom.get('reason')}"])
+    lines.append("")
+    lines.append("Player data")
+    players = summary.get("players", {})
+    for stats in players.values():
+        batting = stats.get("batting", {})
+        bowling = stats.get("bowling", {})
+        fielding = stats.get("fielding", {})
+        lines.append(
+            f"- {stats.get('name')} ({team_label(summary, stats.get('team'))}): "
+            f"{batting.get('runs', 0)}({batting.get('balls', 0)}), "
+            f"{bowling.get('wickets', 0)}W/{bowling.get('runs', 0)}, "
+            f"C {fielding.get('catches', 0)}, RO {fielding.get('runouts', 0)}, D {fielding.get('drops', 0)}"
+        )
+    return "\n".join(lines)
+
+
+def team_label(summary: dict[str, Any], team_key: str | None) -> str:
+    teams = summary.get("teams", {})
+    if team_key and team_key in teams:
+        return teams[team_key].get("name") or f"Team {team_key}"
+    return str(team_key or "Team")
+
+
+def profile_text(profile: dict[str, Any]) -> str:
+    runs = int(profile.get("runs") or 0)
+    balls = int(profile.get("balls") or 0)
+    sr = runs * 100 / balls if balls else 0.0
+    return (
+        f"{profile.get('display_name', profile.get('tg_id'))}\n"
+        f"Virtual credits: {profile.get('credits', 0)}\n"
+        f"Matches: {profile.get('matches', 0)} | Runs: {runs} | SR: {sr:.2f}\n"
+        f"Wickets: {profile.get('wickets', 0)} | Catches: {profile.get('catches', 0)} | POTM: {profile.get('player_of_match', 0)}\n"
+        f"Fun games: {profile.get('games_won', 0)}W/{profile.get('games_lost', 0)}L from {profile.get('games_played', 0)}\n"
+        "Credits are virtual only: no real money, no deposit, no withdrawal."
+    )

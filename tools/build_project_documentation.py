@@ -116,7 +116,9 @@ def build() -> None:
 
     subtitle = doc.add_paragraph()
     subtitle.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    subtitle.add_run("Updated local project guide for match flow, rules, AI replies, files, and Render deployment.")
+    subtitle.add_run(
+        "Updated local guide for match rules, DRS, AI commands, match history, virtual credits, and Render deployment."
+    )
 
     add_h(doc, "1. Current Project Snapshot")
     add_bullets(
@@ -125,30 +127,25 @@ def build() -> None:
             "Project folder: C:\\Users\\tyson\\OneDrive\\Documents\\Cricket Bot 2",
             "Main entry point: main.py",
             "Telegram framework: python-telegram-bot with job queue and webhooks extras",
-            "Database: SQLite by default, DATABASE_PATH controls location",
+            "Database: SQLite by default, DATABASE_PATH controls the file location",
             "AI model: gemini-flash-latest through GEMINI_MODEL",
             "Render free deploy: webhook mode with RUN_MODE=webhook",
+            "This document now records the May 27, 2026 Cricket Verse rules update.",
         ],
     )
 
-    add_h(doc, "2. Updated Files")
-    add_table(
+    add_h(doc, "2. Latest Rule Update")
+    add_bullets(
         doc,
-        ["File", "Purpose", "Latest Important Changes"],
         [
-            ["main.py", "Starts the bot", "Calls cricket_verse.bot.run()."],
-            ["cricket_verse/bot.py", "Telegram commands, callback buttons, lobby, gameplay flow", "Start lock, admin start approval, /add, funny commentary, team-name reply validation, run + length batting flow, webhook support."],
-            ["cricket_verse/engine.py", "Cricket scoring and wicket engine", "Secret actual length, hard-ball miss-run logic, extras, wickets, catches, scoring state."],
-            ["cricket_verse/game_data.py", "Pacer/spinner delivery tables", "Contains delivery length, MLR, hard-ball, catch-ball, extras and spam percentages."],
-            ["cricket_verse/formatting.py", "MPMM and scorecard text", "/myteam roster view, timeline last 8, RRR only in innings 2."],
-            ["cricket_verse/database.py", "SQLite persistence", "Players, active matches, completed matches, career stats, username lookup."],
-            ["cricket_verse/gemini.py", "Gemini stat answers", "Longer output, English funny style, fallback summaries, long Telegram reply splitting."],
-            ["cricket_verse/config.py", "Environment settings", "RUN_MODE, PORT, webhook path/url, Gemini model, database path."],
-            ["render.yaml", "Render deployment blueprint", "Free web service, Python 3.12.8, webhook env setup."],
-            [".env.example", "Local env template", "Uses gemini-flash-latest and webhook/polling switches."],
-            ["README.md", "Human quick guide", "Updated commands, Render setup, ball flow, latest behavior notes."],
+            "Natural AI replies are removed. The bot answers match questions only through /ask.",
+            "/buzz is reserved for previous-match history, player stats, records, and database-backed banter.",
+            "Every completed match gets a match id. /matchin <id> shows saved match details and all player data.",
+            "Each team receives 2 DRS reviews per innings for LBW or Stumped wicket calls.",
+            "Player of the Match is announced at match end using batting, bowling, fielding, and winning impact.",
+            "Team formation should avoid chat spam by editing the same /myteam message for add, remove, and select flows.",
+            "Virtual credits and fun games are for entertainment only. No real money, deposits, withdrawals, or cash value.",
         ],
-        [1.7, 2.0, 2.8],
     )
 
     add_h(doc, "3. Commands And Lobby Flow")
@@ -156,26 +153,27 @@ def build() -> None:
         doc,
         [
             "Captain sends /playmatch <overs> in the group.",
-            "Captain 2 joins through the Join button.",
-            "Both captains must reply with team names. Only the requested captain's reply is accepted.",
-            "Bot randomly selects one captain as toss winner.",
+            "The bot asks both captains to join on the main match message.",
+            "Only the requested captain's reply is accepted when the bot asks for team names.",
+            "The bot randomly selects one captain as toss winner.",
             "Toss winner chooses Bat or Bowl.",
             "Captains use /myteam to manage their own team only.",
-            "Start remains locked until both teams have equal players and the opening batter and bowler are selected.",
-            "Admin approval is required before the match can start after both captains press Start.",
+            "Start stays locked until both teams have equal players and the opening batter and bowler are selected.",
+            "After both captains press Start, admin approval is required before the match begins.",
         ],
     )
 
-    add_h(doc, "4. /myteam And /add Behavior")
+    add_h(doc, "4. Team Formation")
     add_bullets(
         doc,
         [
-            "/myteam is captain-only and shows only that captain's roster.",
-            "Add button remains available in /myteam.",
-            "New /add support lets a captain add a tagged/replied/numeric-id player directly.",
-            "Remove button remains serial-number based.",
-            "Players show Telegram first name in team lists when available.",
-            "Player list updates after add/remove/select operations.",
+            "/myteam is captain-only and displays only that captain's roster.",
+            "The /myteam Add, Remove, and Select flows should edit the same menu message instead of sending many new messages.",
+            "/add lets a captain add a replied player, tagged player, username, Telegram link, numeric id, or known user.",
+            "Remove remains serial-number based from the captain's own list.",
+            "Select shows serial buttons for choosing the opening batter or current bowler.",
+            "Players are shown by Telegram first name when available. Names refresh when the bot sees the user again.",
+            "Button permissions stay strict. If the wrong person clicks, the popup says: You are not [Player Name]!",
         ],
     )
 
@@ -183,85 +181,213 @@ def build() -> None:
     add_bullets(
         doc,
         [
-            "MPMM updates every ball with score, wickets, overs, current batter, current bowler, and last delivery.",
-            "CRR always appears.",
-            "RRR appears only in the second innings.",
+            "The Main Playing Match Message updates every ball with runs, wickets, overs, batter, bowler, and last delivery.",
+            "CRR always appears. RRR appears only in the second innings.",
+            "Current batter shows runs, balls, and strike rate.",
+            "Current bowler shows wickets, overs, runs conceded, and economy.",
             "Timeline shows the last 8 events such as 1 | 4 | wd | W(c).",
-            "Wrong-user button clicks show: You are not [Player Name]!",
-            "Over complete pauses the arena and asks the bowling captain to select a new bowler.",
-            "Wicket pauses the arena and asks the batting captain to select a new batter.",
+            "Extra balls receive normal short commentary, not giant AI paragraphs.",
+            "Wicket, catch, drop, DRS, chase, and pressure events get human-style funny commentary.",
         ],
     )
 
-    add_h(doc, "6. Ball Physics And Hard-Ball Logic")
+    add_h(doc, "6. Pacer Ball Data")
+    add_table(
+        doc,
+        ["No.", "Delivery", "Allowed Lengths", "MLR"],
+        [
+            ["0", "Reverse Swing", "Yorker, Full", "0, 1"],
+            ["1", "Bouncer", "Bouncer, Short", "0, 1, 2"],
+            ["2", "Yorker", "Yorker", "0, 1, 2"],
+            ["3", "Short", "Short", "1, 2, 3, 4"],
+            ["4", "Slower", "Full, Good", "Full: 1, 2, 4; Good: 0, 1, 2, 3"],
+            ["6", "Knuckle", "Full, Yorker", "Full: 2, 4, 6; Yorker: 0, 2"],
+        ],
+        [0.6, 1.5, 1.7, 2.7],
+    )
+
+    add_h(doc, "7. Spinner Ball Data")
+    add_table(
+        doc,
+        ["No.", "Delivery", "Allowed Lengths", "MLR"],
+        [
+            ["0", "Carrom", "Good", "0, 1"],
+            ["1", "Doosra", "Good", "0, 1, 2"],
+            ["2", "Leg Break", "Full, Good", "Full: 1, 2, 4; Good: 1, 2, 3"],
+            ["3", "Top Spin", "Good, Short", "Good: 0, 1, 2, 3; Short: 1, 2, 3, 4"],
+            ["4", "Flipper", "Full, Good", "Full: 2, 4, 6; Good: 1, 2, 4"],
+            ["6", "Googly", "Good, Full", "Good: 0, 1, 2; Full: 2, 4, 6"],
+        ],
+        [0.6, 1.5, 1.7, 2.7],
+    )
+
+    add_h(doc, "8. Scoring And Hard Balls")
     add_numbers(
         doc,
         [
             "Bowler chooses a delivery type.",
-            "Bot secretly picks the actual length from that delivery's allowed lengths.",
-            "Batter selects a run.",
-            "Batter selects a length guess.",
-            "If the batter length matches the actual length, normal selected runs are awarded.",
-            "If the length misses, the MLR/miss-run table gives miss-length runs.",
-            "For the first 3 hard balls in an over, hard-ball protection applies: length miss gives miss-length runs.",
-            "Bouncers count into the hard-ball cap. After 2 bouncers, only 1 more hard-ball slot remains.",
-            "From the 4th hard ball onward, batter gets selected runs even if length logic would otherwise restrict it.",
+            "Bot secretly chooses an actual length from that delivery's allowed lengths.",
+            "Batter chooses a run value.",
+            "Batter chooses a length guess.",
+            "Length match gives the batter's selected runs.",
+            "Length mismatch gives miss-length runs by the delivery MLR data and weighted miss-run table.",
+            "Normal balls only give batter-selected runs on a length match.",
+            "Hard balls plus bouncers share one cap of 3 hard-ball slots per over.",
+            "For the first 3 hard-ball slots, batter gets selected runs only when length matches; otherwise miss-length runs are added.",
+            "If 2 bouncers are used in an over, only 1 more hard-ball slot remains.",
+            "From the 4th hard ball onward, the batter gets selected runs regardless of length.",
+            "Bowler bouncer delivery is locked after 2 bouncers in the over.",
+            "The batter-side bouncer length option is single-use per over if it is offered; after one use it is removed for that over.",
         ],
     )
-
-    add_h(doc, "7. Bowling Data Summary")
     add_table(
         doc,
-        ["Style", "Hard Balls", "Catch Balls", "Bouncer Limit"],
+        ["Style", "Hard Balls", "Catch Balls"],
         [
-            ["Pacer", "Reverse Swing (0), Bouncer (1), Yorker (2)", "Bouncer, Short, Slower, Knuckle", "Max 2 bouncers per over"],
-            ["Spinner", "Carrom (0), Doosra (1), Top Spin (3)", "Doosra, Leg Break, Top Spin, Googly", "No bouncer delivery"],
+            ["Pacer", "Reverse Swing (0), Bouncer (1), Yorker (2)", "Bouncer, Short, Slower, Knuckle"],
+            ["Spinner", "Carrom (0), Doosra (1), Top Spin (3)", "Doosra, Leg Break, Top Spin, Googly"],
         ],
-        [1.1, 2.5, 2.1, 1.0],
+        [1.2, 2.7, 2.6],
+    )
+    add_table(
+        doc,
+        ["Miss-Length Run", "Probability"],
+        [
+            ["6", "10%"],
+            ["4", "15%"],
+            ["3", "20%"],
+            ["2", "30%"],
+            ["1", "25%"],
+        ],
+        [2.5, 2.0],
     )
 
-    add_h(doc, "8. Wickets, Catches, Extras, And Commentary")
+    add_h(doc, "9. Wickets, Catch, Run Out, And DRS")
+    add_table(
+        doc,
+        ["Condition", "Length Result", "Outcome Probabilities"],
+        [
+            ["BFR = BR", "Mismatch", "50% Bowled/Stumped/LBW; 30% Catch Out type 1; 20% Run Out"],
+            ["BFR = BR", "Match", "30% Bowled/Stumped/LBW; 70% survives with batter runs"],
+            ["BFR != BR", "Mismatch", "70% gets runs by ball data; 30% Catch Out type 2 only on catch-ball deliveries"],
+            ["BFR != BR", "Match", "Runs proceed; type 2 catch does not trigger"],
+        ],
+        [1.3, 1.2, 4.0],
+    )
     add_bullets(
         doc,
         [
-            "BFR = BR can trigger Bowled/LBW/Stumped, Catch Out type 1, Run Out, or survival depending on length result.",
-            "BFR != BR can trigger Catch Out type 2 only on catch-ball deliveries and only on length mismatch.",
-            "Catch system selects a random fielder and time window of 120, 150, or 180 seconds.",
-            "Fielder guesses 0, 1, 2, 3, 4, or 6. Correct guess is out; wrong/timeout is drop catch.",
-            "Drop-catch bonus runs depend on air time: 120s = 1, 150s = 2, 180s = 3.",
-            "Extras include natural wide/no-ball/leg-bye and spam protocol for repeated deliveries.",
-            "Commentary is English-only, funny, and sharper on wickets/catches/drops/random events.",
+            "Run out is a direct wicket when triggered.",
+            "Catch system selects a random fielder from the bowling team and gives 120, 150, or 180 seconds.",
+            "Catch time probability: 120s = 30%, 150s = 50%, 180s = 20%.",
+            "Fielder guesses 0, 1, 2, 3, 4, or 6. Correct guess is OUT; wrong guess or timeout is DROP CATCH.",
+            "Drop-catch bonus: 120s adds 1 run, 150s adds 2 runs, 180s adds 3 runs.",
+            "Each team gets 2 DRS reviews per innings.",
+            "DRS appears only on LBW or Stumped wicket commentary messages.",
+            "Only the respected team captain can press DRS.",
+            "DRS result: 70% wicket stays and review is lost; 30% batter survives and returns to the pitch.",
         ],
     )
 
-    add_h(doc, "9. Innings And Finish")
+    add_h(doc, "10. Extras And Spam Protocol")
+    add_table(
+        doc,
+        ["Pacer Delivery", "Wide", "No Ball", "Leg Bye", "Spam Wide", "Spam No Ball"],
+        [
+            ["Reverse Swing", "4%", "1%", "2%", "75%", "20%"],
+            ["Bouncer", "8%", "6%", "1%", "100%", "60%"],
+            ["Yorker", "5%", "3%", "2%", "90%", "50%"],
+            ["Short", "6%", "2%", "1%", "80%", "20%"],
+            ["Slower", "4%", "2%", "1%", "65%", "15%"],
+            ["Knuckle", "3%", "5%", "1%", "50%", "45%"],
+        ],
+        [1.45, 0.9, 0.9, 0.9, 1.05, 1.15],
+    )
+    add_table(
+        doc,
+        ["Spinner Delivery", "Wide", "No Ball", "Leg Bye", "Spam Wide", "Spam No Ball"],
+        [
+            ["Carrom", "3%", "1%", "1%", "60%", "10%"],
+            ["Doosra", "5%", "1%", "1%", "80%", "15%"],
+            ["Leg Break", "6%", "1%", "2%", "90%", "10%"],
+            ["Top Spin", "4%", "2%", "1%", "75%", "20%"],
+            ["Flipper", "5%", "3%", "1%", "70%", "25%"],
+            ["Googly", "7%", "2%", "1%", "100%", "15%"],
+        ],
+        [1.45, 0.9, 0.9, 0.9, 1.05, 1.15],
+    )
+    add_table(
+        doc,
+        ["Spam Trigger", "Result"],
+        [
+            ["2nd consecutive same delivery", "20% Wide, 80% legal"],
+            ["3rd consecutive same delivery", "70% No Ball, 30% legal"],
+            ["4th use of same delivery within an over", "80% No Ball, 20% Wide"],
+        ],
+        [2.5, 4.0],
+    )
+
+    add_h(doc, "11. Innings, Match ID, And Finish")
     add_bullets(
         doc,
         [
-            "First innings ends when overs finish or all players are out.",
-            "Full batting and bowling scorecard is sent after innings completion.",
-            "Second innings swaps batting and bowling roles.",
-            "Target is first innings score + 1.",
-            "Chasing team wins immediately after reaching target.",
-            "If chase fails, defending team wins by runs.",
-            "Completed match stats are saved to the database.",
+            "First innings ends when overs finish or all available batters are out.",
+            "A full batting and bowling scorecard is sent after innings completion.",
+            "Second innings swaps roles and target is first innings score plus 1.",
+            "Chasing team wins immediately after reaching target. Otherwise the defending team wins by runs.",
+            "Every completed match is saved with a unique match id.",
+            "/matchin <id> shows the saved match summary, innings scorecards, player stats, key moments, and player of the match.",
+            "Player of the Match should be calculated from runs, wickets, catches, run outs, clutch chase/defense impact, and winning contribution.",
         ],
     )
 
-    add_h(doc, "10. AI Replies")
+    add_h(doc, "12. AI Commands")
+    add_table(
+        doc,
+        ["Command", "Purpose", "Style"],
+        [
+            ["/ask <question>", "Answers only ongoing-match questions such as who may win, where the match turned, who choked, and what the next pressure point is.", "Short, funny, English-only, match-related, roast/bully energy without unrelated trash."],
+            ["/buzz <question>", "Uses database history for previous match details, player stats, top run scorers, wicket leaders, best matches, and player comparisons.", "Human-style cricket banter with useful facts first and jokes second."],
+            ["/matchin <id>", "Shows one saved match by id with every important score and player detail.", "Readable summary, not a raw database dump."],
+            ["/myprofile", "Shows the user's profile, virtual credits, game record, and cricket stats.", "Compact and playful."],
+        ],
+        [1.3, 3.1, 2.1],
+    )
     add_bullets(
         doc,
         [
-            "AI answers player-stat questions when the user replies to a player, tags a username, uses a Telegram user link, or includes a Telegram id.",
-            "AI uses SQLite career stats, recent completed match snapshots, and live match state if the player is active.",
-            "Gemini output uses gemini-flash-latest.",
-            "AI replies are English-only and use funny cricket banter with light playful roast energy.",
-            "Long AI answers are split into Telegram-safe chunks so the answer does not get cut off.",
-            "Fallback local summaries work even without GEMINI_API_KEY.",
+            "The bot should not auto-reply to normal tagged/replied questions anymore.",
+            "AI answers must use current match state for /ask and persisted database records for /buzz.",
+            "Avoid huge paragraphs. Give the useful answer, then a quick human-style comment.",
+            "Gemini model remains gemini-flash-latest, with local fallback answers if GEMINI_API_KEY is missing.",
         ],
     )
 
-    add_h(doc, "11. Render Free Deployment")
+    add_h(doc, "13. Virtual Credits And Fun Games")
+    add_bullets(
+        doc,
+        [
+            "All money/coins are virtual in-bot credits only. They have no real-world value.",
+            "No deposits, no withdrawals, no buying credits, and no cash prizes.",
+            "/myprofile shows credits, match stats, mini-game wins, and losses.",
+            "PvP games can include Toss Duel, Number Smash, Run Race, Wicket Hunt, and Over Predictor.",
+            "Group games can include prediction pools using virtual credits, with the winning players sharing the virtual prize pot.",
+            "Game messages should be short, funny, and safe for group play.",
+        ],
+    )
+
+    add_h(doc, "14. Database And Persistence")
+    add_bullets(
+        doc,
+        [
+            "SQLite stores live match snapshots, completed matches, career stats, player names/usernames, and virtual credit profiles.",
+            "Active match data should be saved after each important state change.",
+            "Completed match snapshots should preserve enough ball-by-ball and player detail for /matchin, /ask, and /buzz.",
+            "Free Render storage is temporary unless a persistent disk or external database is added later.",
+        ],
+    )
+
+    add_h(doc, "15. Render Free Deployment")
     add_p(doc, "Use Render Web Service on the Free plan. The bot runs in webhook mode.")
     add_table(
         doc,
@@ -278,21 +404,29 @@ def build() -> None:
         [2.0, 4.5],
     )
     add_p(doc, "Add TELEGRAM_BOT_TOKEN and GEMINI_API_KEY manually in Render Environment. Do not commit .env.")
-    add_p(doc, "Free Render storage is temporary. SQLite stats may reset after redeploy/restart unless you later use a persistent disk or external database.")
+    add_p(doc, "For long-term stats on Render Free, move DATABASE_PATH to a persistent disk or external database later.")
 
-    add_h(doc, "12. GitHub Upload Checklist")
-    add_bullets(
+    add_h(doc, "16. Updated Files")
+    add_table(
         doc,
+        ["File", "Purpose", "Latest Spec Coverage"],
         [
-            "Upload/commit updated code files after each local change.",
-            "Do not upload .env, SQLite databases, or __pycache__.",
-            "If using GitHub website, drag updated files/folders and commit changes.",
-            "If using GitHub Desktop, copy updated files into the cloned repo, commit, then push.",
-            "After GitHub update, use Render Manual Deploy -> Deploy latest commit.",
+            ["main.py", "Starts the bot", "Calls cricket_verse.bot.run()."],
+            ["cricket_verse/bot.py", "Telegram commands, callback buttons, lobby, gameplay flow", "Needs command surface for /ask, /buzz, /matchin, /myprofile, DRS buttons, same-message /myteam menus, and virtual games."],
+            ["cricket_verse/engine.py", "Cricket scoring and wicket engine", "Needs latest hard-ball, wicket probability, spam percentage, DRS, and player-of-match logic."],
+            ["cricket_verse/game_data.py", "Pacer/spinner delivery tables", "Stores delivery lengths, MLR, hard balls, catch balls, extras, and spam data."],
+            ["cricket_verse/formatting.py", "MPMM and scorecard text", "Needs compact human UI, player of match, /matchin summary, and profile formatting."],
+            ["cricket_verse/database.py", "SQLite persistence", "Needs match ids, completed-match query helpers, virtual credits, and richer history for /buzz."],
+            ["cricket_verse/gemini.py", "Gemini-backed answers", "Should answer only /ask and /buzz, English-only, short, funny, database-backed."],
+            ["cricket_verse/config.py", "Environment settings", "RUN_MODE, PORT, webhook path/url, Gemini model, database path."],
+            ["render.yaml", "Render deployment blueprint", "Free web service, Python 3.12.8, webhook env setup."],
+            [".env.example", "Local env template", "Uses gemini-flash-latest and webhook/polling switches."],
+            ["README.md", "Human quick guide", "Should mirror this command and rule update after implementation."],
         ],
+        [1.7, 2.0, 2.8],
     )
 
-    add_h(doc, "13. Important Environment Variables")
+    add_h(doc, "17. Important Environment Variables")
     add_code_block(
         doc,
         [
@@ -306,7 +440,7 @@ def build() -> None:
         ],
     )
 
-    add_h(doc, "14. Current Function Map")
+    add_h(doc, "18. Current Function Map")
     add_table(
         doc,
         ["Module", "Key Functions"],
@@ -323,12 +457,12 @@ def build() -> None:
     )
 
     doc.add_section(WD_SECTION.NEW_PAGE)
-    add_h(doc, "15. Final Notes")
+    add_h(doc, "19. Final Notes")
     add_bullets(
         doc,
         [
-            "The current local files compile successfully with bundled Python.",
-            "Render should be redeployed after GitHub receives these updated files.",
+            "This document is the updated local Cricket Verse specification for the next code pass.",
+            "Render should be redeployed after GitHub receives the updated files.",
             "The local machine does not currently expose a working git command in PowerShell, so GitHub Desktop or website upload is the easiest route.",
         ],
     )

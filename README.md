@@ -11,10 +11,14 @@ A Python Telegram bot for the Cricket Verse ball data and match flow you describ
 - Start stays locked until both teams have equal players and the starting batter/bowler are selected.
 - `/add` lets captains add a replied, tagged, or numeric-id player to their own team.
 - Match start needs group admin approval after both captains press Start.
-- Pacer and spinner delivery data, batter run + length selection, hard-ball logic, bouncer limit, extras, spam protocol, wickets, catch guesses, run outs, over changes, innings switch, target chase.
-- SQLite database stores player career stats and completed match snapshots.
+- Pacer and spinner delivery data, batter run + length selection, hard-ball logic, batter bouncer limit, extras, spam protocol, wickets, catch guesses, run outs, DRS, over changes, innings switch, target chase.
+- SQLite database stores player career stats, completed match snapshots with match ids, player-of-match records, and virtual credit profiles.
 - `/howplayed <telegram_id>` summarizes saved stats with Gemini when `GEMINI_API_KEY` is set.
-- Natural AI questions work when a message replies to a user, mentions a saved `@username`, or includes a Telegram id. Examples: `how did he play?`, `stats @playername`, `what is 123456789 batting record?`
+- `/ask` answers only live ongoing-match questions.
+- `/buzz` answers saved database/history/player-stat questions.
+- `/matchin <id>` shows full saved match details and every player line.
+- `/myprofile` shows cricket stats, virtual credits, and fun-game record.
+- Virtual-credit games are for entertainment only: no real money, no deposit, no withdrawal.
 
 ## Setup
 
@@ -73,8 +77,12 @@ Free Render storage is temporary. With `DATABASE_PATH=/tmp/cricket_verse.sqlite3
 - `/myteam` - captain team controls.
 - `/add <telegram_id> <name>` - captain-only quick add; also works when replying to or tagging a Telegram user.
 - `/howplayed 123456789` - Gemini/stat summary for a Telegram user id.
-- Reply to a player and ask `how did he play?` - AI answers from the database and live match state.
-- Ask `stats @username` or `what is 123456789 performance?` - AI answers for that player if they exist in the database.
+- `/ask who is winning?` - live match analysis only.
+- `/buzz top runs` or `/buzz most wickets` - database-backed history and player stats.
+- `/matchin 12` - saved match details for match id 12.
+- `/myprofile` - your stats and virtual credits.
+- `/games` - list virtual-credit games.
+- `/tossduel 50`, `/runrace 50`, `/wicketpick 50` - PvP virtual-credit challenges.
 - `/cancelmatch` - end the active match in the chat.
 
 ## Ball Flow
@@ -85,6 +93,21 @@ Free Render storage is temporary. With `DATABASE_PATH=/tmp/cricket_verse.sqlite3
 4. Batter selects a length guess: Full, Yorker, Good, Short, and Bouncer when that delivery can be a bouncer.
 5. If the batter length matches the actual length, the batter gets the selected run. If it misses, MLR/hard-ball/wicket rules decide the result.
 6. For the first 3 hard balls in an over, length miss gives miss-length runs. Bouncers count toward that hard-ball cap.
+7. A batter can use the Bouncer length option once per over when it is offered.
+8. LBW and Stumped wickets offer DRS to the batting captain when reviews remain.
+
+## AI Behavior
+
+- Natural reply AI is disabled. The bot will not answer random replied/tagged questions.
+- Use `/ask` for current match questions such as who is winning, who choked, or where the pressure shifted.
+- Use `/buzz` for previous match details, leaderboards, player stats, and saved database facts.
+- Answers are short, English-only, cricket-focused, and can include light funny roast commentary.
+
+## Virtual Credits
+
+- Credits are in-bot entertainment points only.
+- There is no real-money gambling, buying, selling, deposit, withdrawal, or cash prize.
+- Fun-game winners gain virtual credits from the loser and records appear in `/myprofile`.
 
 ## Notes
 
