@@ -106,6 +106,62 @@ Live match/player snapshot JSON:
         return f"{fallback}\n\nGemini answer failed: {exc}"
 
 
+async def answer_match_question(
+    api_key: str | None,
+    model: str,
+    question: str,
+    snapshot: dict[str, Any],
+) -> str:
+    if not api_key:
+        return local_match_answer(question, snapshot)
+
+    prompt = f"""
+You are Cricket Verse's live match analyst.
+Answer ONLY the user's ongoing-match question from the JSON. Keep it under 900 characters.
+Be useful first: mention score, chase/defense pressure, last turning point if visible, and who is under pressure.
+Use funny English roast/bully cricket banter, but only about the match. Avoid generic trash talk and avoid huge text.
+Do not invent balls, scores, names, wickets, or past matches.
+
+Question:
+{question}
+
+Live match JSON:
+{json.dumps(snapshot, indent=2)}
+"""
+    try:
+        return await asyncio.to_thread(_post_gemini, api_key, model, prompt)
+    except Exception as exc:
+        fallback = local_match_answer(question, snapshot)
+        return f"{fallback}\n\nGemini /ask failed: {exc}"
+
+
+async def answer_buzz_question(
+    api_key: str | None,
+    model: str,
+    question: str,
+    data: dict[str, Any],
+) -> str:
+    if not api_key:
+        return local_buzz_answer(question, data)
+
+    prompt = f"""
+You are Cricket Verse's database analyst.
+Answer the /buzz question using ONLY the JSON. Keep it short, human, and cricket-focused.
+Use English, useful facts, and one funny roast line if it fits. Do not invent data.
+
+Question:
+{question}
+
+Database JSON:
+{json.dumps(data, indent=2)}
+"""
+    try:
+        return await asyncio.to_thread(_post_gemini, api_key, model, prompt)
+    except Exception as exc:
+        fallback = local_buzz_answer(question, data)
+        return f"{fallback}\n\nGemini /buzz failed: {exc}"
+
+
 def local_summary(stats: dict[str, Any], recent: list[dict[str, Any]]) -> str:
     runs = int(stats.get("runs") or 0)
     balls = int(stats.get("balls") or 0)
@@ -149,3 +205,53 @@ def local_question_answer(
         )
     answer += f"\nRecent records found: {len(recent)}. Tiny analyst note: play the length, not the vibes."
     return answer
+
+
+def local_match_answer(question: str, snapshot: dict[str, Any]) -> str:
+    score = snapshot.get("score", {})
+    batting = snapshot.get("batting_team", "Batting side")
+    bowling = snapshot.get("bowling_team", "Bowling side")
+    runs = int(score.get("runs", 0))
+    wickets = int(score.get("wickets", 0))
+    overs = score.get("overs", "0.0")
+    target = score.get("target")
+    balls_left = int(score.get("balls_left", 0))
+    timeline = score.get("timeline", [])
+    if target:
+        needed = max(0, int(target) - runs)
+        leader = batting if needed <= max(1, balls_left) else bowling
+        return (
+            f"{leader} look ahead right now. {batting} are {runs}/{wickets} in {overs}, "
+            f"need {needed} from {balls_left} ball(s). Last cards: {' | '.join(map(str, timeline[-6:])) or 'none'}. "
+            "Pressure note: whoever panics on length next is donating the match like charity."
+        )
+    return (
+        f"{batting} are {runs}/{wickets} after {overs}. {bowling} need wickets before this becomes batting practice. "
+        f"Last cards: {' | '.join(map(str, timeline[-6:])) or 'none'}. Tiny roast: dot balls are gold, panic balls are comedy."
+    )
+
+
+def local_buzz_answer(question: str, data: dict[str, Any]) -> str:
+    leaders = data.get("leaders", {})
+    match_info = data.get("match")
+    if match_info:
+        summary = match_info.get("summary", {})
+        pom = summary.get("player_of_match") or {}
+        return (
+            f"Match #{match_info.get('id')}: {summary.get('result', 'result unknown')}. "
+            f"POTM: {pom.get('name', 'not recorded')} ({pom.get('reason', 'impact not recorded')}). "
+            "That scorecard still has fingerprints on it."
+        )
+    if leaders:
+        lines = []
+        for title, rows in leaders.items():
+            if rows:
+                top = rows[0]
+                value = top.get(title, top.get("runs", 0))
+                lines.append(f"{title}: {top.get('display_name', top.get('tg_id'))} leads with {value}.")
+        return " ".join(lines) or "No leaderboard data yet. The database is still warming up."
+    recent = data.get("recent_matches", [])
+    if recent:
+        latest = recent[0]
+        return f"Latest saved match is #{latest.get('id')}: {latest.get('summary', {}).get('result', 'result unknown')}."
+    return "No saved Cricket Verse data yet. Play a match first, then /buzz will have something spicy to read."

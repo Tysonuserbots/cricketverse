@@ -75,6 +75,9 @@ class Match:
     pending_action: dict[str, dict[str, Any]] = field(default_factory=dict)
     pending_delivery: dict[str, Any] | None = None
     pending_catch: dict[str, Any] | None = None
+    pending_drs: dict[str, Any] | None = None
+    drs_reviews: dict[str, int] = field(default_factory=lambda: {"A": 2, "B": 2})
+    player_of_match: dict[str, Any] | None = None
     target: int | None = None
 
     def to_dict(self) -> dict[str, Any]:
@@ -101,6 +104,9 @@ class Match:
             "pending_action": self.pending_action,
             "pending_delivery": self.pending_delivery,
             "pending_catch": self.pending_catch,
+            "pending_drs": self.pending_drs,
+            "drs_reviews": self.drs_reviews,
+            "player_of_match": self.player_of_match,
             "target": self.target,
         }
 
@@ -142,9 +148,13 @@ def reset_score(match: Match) -> None:
         "consecutive": 0,
         "bouncers": 0,
         "hard_slots": 0,
+        "batter_bouncers": 0,
     }
     match.current_batter_id = None
     match.current_bowler_id = None
     match.current_bowler_style = None
     match.pending_delivery = None
     match.pending_catch = None
+    match.pending_drs = None
+    if not match.drs_reviews:
+        match.drs_reviews = {"A": 2, "B": 2}

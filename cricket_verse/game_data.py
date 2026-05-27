@@ -4,7 +4,7 @@ from dataclasses import dataclass
 
 
 RUN_CHOICES = (0, 1, 2, 3, 4, 6)
-MISS_RUN_WEIGHTS = {0: 15, 1: 25, 2: 30, 3: 20, 4: 15, 6: 10}
+MISS_RUN_WEIGHTS = {1: 25, 2: 30, 3: 20, 4: 15, 6: 10}
 CATCH_TIME_WEIGHTS = {120: 30, 150: 50, 180: 20}
 CATCH_DROP_RUNS = {120: 1, 150: 2, 180: 3}
 HARD_WICKET_TYPES = ("Bowled", "LBW", "Stumped")

@@ -23,6 +23,7 @@ from .engine import (
     available_batters,
     balls_left,
     build_pending_catch,
+    decide_drs,
     ensure_match_player_stats,
     finish_catch,
     get_player,
@@ -33,11 +34,23 @@ from .engine import (
     make_pending_delivery,
     overs_text,
     resolve_pending_delivery,
+    reset_drs_reviews,
+    select_player_of_match,
     team_name,
 )
-from .formatting import innings_scorecard, match_summary, player_name, scoreboard, team_roster_text, teams_text
+from .formatting import (
+    completed_match_text,
+    innings_scorecard,
+    match_summary,
+    player_name,
+    player_of_match_text,
+    profile_text,
+    scoreboard,
+    team_roster_text,
+    teams_text,
+)
 from .game_data import DELIVERIES_BY_STYLE, RUN_CHOICES, delivery_label
-from .gemini import answer_player_question, summarize_player
+from .gemini import answer_buzz_question, answer_match_question, answer_player_question, summarize_player
 from .models import Match, make_match, new_player, reset_score, user_label
 
 
@@ -108,6 +121,7 @@ def reset_over_state(match: Match) -> None:
         "consecutive": 0,
         "bouncers": 0,
         "hard_slots": 0,
+        "batter_bouncers": 0,
     }
     match.score["over_events"] = []
 
@@ -160,14 +174,18 @@ def remove_markup(match: Match, team_key: str) -> InlineKeyboardMarkup:
         if int(player["id"]) == cap_id:
             continue
         rows.append([InlineKeyboardButton(f"{idx}. {player['name']}", callback_data=f"remove:{team_key}:{player['id']}")])
-    return InlineKeyboardMarkup(rows or [[InlineKeyboardButton("No removable players", callback_data="noop")]])
+    rows = rows or [[InlineKeyboardButton("No removable players", callback_data="noop")]]
+    rows.append([InlineKeyboardButton("Back", callback_data=f"team:back:{team_key}")])
+    return InlineKeyboardMarkup(rows)
 
 
 def select_batter_markup(match: Match, team_key: str) -> InlineKeyboardMarkup:
     rows = []
     for idx, player in enumerate(available_batters(match, team_key), start=1):
         rows.append([InlineKeyboardButton(f"{idx}. {player['name']}", callback_data=f"pick_batter:{player['id']}")])
-    return InlineKeyboardMarkup(rows or [[InlineKeyboardButton("No batters available", callback_data="noop")]])
+    rows = rows or [[InlineKeyboardButton("No batters available", callback_data="noop")]]
+    rows.append([InlineKeyboardButton("Back", callback_data=f"team:back:{team_key}")])
+    return InlineKeyboardMarkup(rows)
 
 
 def select_bowler_markup(match: Match, team_key: str) -> InlineKeyboardMarkup:
@@ -175,6 +193,7 @@ def select_bowler_markup(match: Match, team_key: str) -> InlineKeyboardMarkup:
     for idx, player in enumerate(match.teams[team_key]["players"], start=1):
         style = f" [{player['style']}]" if player.get("style") else ""
         rows.append([InlineKeyboardButton(f"{idx}. {player['name']}{style}", callback_data=f"pick_bowler:{player['id']}")])
+    rows.append([InlineKeyboardButton("Back", callback_data=f"team:back:{team_key}")])
     return InlineKeyboardMarkup(rows)
 
 
@@ -220,7 +239,7 @@ def length_markup(match: Match) -> InlineKeyboardMarkup:
     code = int(match.pending_delivery.get("code", 0))
     delivery = DELIVERIES_BY_STYLE[style][code]
     lengths = ["Full", "Yorker", "Good", "Short"]
-    if "Bouncer" in delivery.lengths:
+    if "Bouncer" in delivery.lengths and int(match.over_state.get("batter_bouncers", 0)) < 1:
         lengths.append("Bouncer")
     rows = []
     row = []
@@ -240,6 +259,15 @@ def catch_markup() -> InlineKeyboardMarkup:
         [InlineKeyboardButton(str(run), callback_data=f"catch:{run}") for run in RUN_CHOICES[3:]],
     ]
     return InlineKeyboardMarkup(rows)
+
+
+def drs_markup(match: Match, team_key: str | None) -> InlineKeyboardMarkup | None:
+    if not team_key:
+        return None
+    reviews = int(match.drs_reviews.get(team_key, 0))
+    if reviews <= 0:
+        return None
+    return InlineKeyboardMarkup([[InlineKeyboardButton(f"DRS ({reviews} left)", callback_data="drs")]])
 
 
 async def answer_not_you(query: Any, required_name: str) -> None:
@@ -267,6 +295,38 @@ async def edit_main(
         if "Message is not modified" not in str(exc):
             sent = await context.bot.send_message(match.chat_id, text, reply_markup=reply_markup)
             match.main_message_id = sent.message_id
+
+
+async def edit_query_message(query: Any, text: str, reply_markup: InlineKeyboardMarkup | None = None) -> None:
+    try:
+        await query.edit_message_text(text=text, reply_markup=reply_markup)
+    except BadRequest as exc:
+        if "Message is not modified" not in str(exc) and query.message:
+            await query.message.reply_text(text, reply_markup=reply_markup)
+
+
+async def edit_team_menu_by_id(
+    context: ContextTypes.DEFAULT_TYPE,
+    match: Match,
+    team_key: str,
+    message_id: int | None,
+    prefix: str | None = None,
+) -> None:
+    if not message_id:
+        return
+    cap_id = int(match.teams[team_key]["captain_id"])
+    text = team_roster_text(match, team_key)
+    if prefix:
+        text = f"{prefix}\n\n{text}"
+    try:
+        await context.bot.edit_message_text(
+            chat_id=match.chat_id,
+            message_id=int(message_id),
+            text=text,
+            reply_markup=team_menu_markup(match, team_key, cap_id),
+        )
+    except BadRequest:
+        return
 
 
 def split_telegram_text(text: str, limit: int = 3900) -> list[str]:
@@ -403,6 +463,246 @@ async def howplayed(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.message.reply_text("Use /howplayed <telegram_id>, or reply to a player and say how he played.")
         return
     await send_player_summary(update, context, target_id)
+
+
+def live_match_snapshot(match: Match) -> dict[str, Any]:
+    ensure_match_player_stats(match)
+    return {
+        "phase": match.phase,
+        "innings": match.innings,
+        "overs": match.overs,
+        "batting_team": team_name(match, match.batting_team),
+        "bowling_team": team_name(match, match.bowling_team),
+        "target": match.target,
+        "innings_history": match.innings_history,
+        "score": {
+            "runs": match.score.get("runs", 0),
+            "wickets": match.score.get("wickets", 0),
+            "legal_balls": match.score.get("legal_balls", 0),
+            "overs": overs_text(match.score.get("legal_balls", 0)),
+            "balls_left": balls_left(match),
+            "target": match.target,
+            "last_delivery": match.score.get("last_delivery"),
+            "timeline": match.score.get("timeline", [])[-12:],
+            "drs_reviews": match.drs_reviews,
+        },
+        "current_batter": {
+            "id": match.current_batter_id,
+            "name": player_name(match, match.current_batter_id),
+            "stats": match.match_stats.get(str(match.current_batter_id), {}).get("batting", {}),
+        },
+        "current_bowler": {
+            "id": match.current_bowler_id,
+            "name": player_name(match, match.current_bowler_id),
+            "style": match.current_bowler_style,
+            "stats": match.match_stats.get(str(match.current_bowler_id), {}).get("bowling", {}),
+        },
+        "players": match.match_stats,
+    }
+
+
+async def ask_match(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not update.effective_chat or not update.message:
+        return
+    question = " ".join(context.args).strip()
+    if not question:
+        await update.message.reply_text("Use: /ask who is winning this match?")
+        return
+    match = active_match(context, update.effective_chat.id)
+    if not match:
+        await update.message.reply_text("/ask works during an active match only.")
+        return
+    cfg = settings(context)
+    answer = await answer_match_question(cfg.gemini_api_key, cfg.gemini_model, question, live_match_snapshot(match))
+    await reply_long(update, answer[:1800])
+
+
+def buzz_payload(update: Update, context: ContextTypes.DEFAULT_TYPE, question: str) -> dict[str, Any]:
+    data: dict[str, Any] = {
+        "recent_matches": db(context).recent_matches(5),
+        "leaders": {
+            "runs": db(context).career_leaders("runs", 5),
+            "wickets": db(context).career_leaders("wickets", 5),
+            "catches": db(context).career_leaders("catches", 5),
+            "player_of_match": db(context).career_leaders("player_of_match", 5),
+            "credits": db(context).career_leaders("credits", 5),
+        },
+    }
+    id_match = re.search(r"\b\d+\b", question)
+    if id_match:
+        record = db(context).completed_match(int(id_match.group(0)))
+        if record:
+            data["match"] = record
+    target_id = extract_question_target_id(update, context, question)
+    if target_id:
+        data["player_stats"] = db(context).player_stats(target_id)
+        data["player_recent"] = db(context).recent_match_stats(target_id)
+    return data
+
+
+async def buzz(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not update.message:
+        return
+    question = " ".join(context.args).strip()
+    if not question:
+        await update.message.reply_text("Use: /buzz top runs, /buzz most wickets, or /buzz match 12")
+        return
+    cfg = settings(context)
+    answer = await answer_buzz_question(cfg.gemini_api_key, cfg.gemini_model, question, buzz_payload(update, context, question))
+    await reply_long(update, answer[:2200])
+
+
+async def matchin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not update.message:
+        return
+    if not context.args or not context.args[0].isdigit():
+        await update.message.reply_text("Use: /matchin <match_id>")
+        return
+    record = db(context).completed_match(int(context.args[0]))
+    if not record:
+        await update.message.reply_text(f"No saved match found with id {context.args[0]}.")
+        return
+    await reply_long(update, completed_match_text(record))
+
+
+async def myprofile(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not update.effective_user or not update.message:
+        return
+    db(context).upsert_user(update.effective_user)
+    profile = db(context).profile(update.effective_user.id)
+    if not profile:
+        await update.message.reply_text("Profile was not found. Send one more message and try again.")
+        return
+    await update.message.reply_text(profile_text(profile))
+
+
+def parse_stake(args: list[str]) -> int | None:
+    if not args or not args[0].isdigit():
+        return None
+    stake = int(args[0])
+    if stake < 10 or stake > 500:
+        return None
+    return stake
+
+
+def fun_games(context: ContextTypes.DEFAULT_TYPE) -> dict[str, dict[str, Any]]:
+    return context.application.bot_data.setdefault("fun_games", {})
+
+
+async def games(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not update.message:
+        return
+    await update.message.reply_text(
+        "Virtual-credit games only. No real money.\n"
+        "/tossduel <10-500> - random toss duel\n"
+        "/runrace <10-500> - six-ball run race\n"
+        "/wicketpick <10-500> - wicket hunt duel\n"
+        "Another player joins from the button. Winner gets the virtual stake."
+    )
+
+
+async def start_fun_game(update: Update, context: ContextTypes.DEFAULT_TYPE, game_key: str) -> None:
+    if not update.effective_chat or not update.effective_user or not update.message:
+        return
+    stake = parse_stake(context.args)
+    if stake is None:
+        await update.message.reply_text("Use a virtual stake from 10 to 500. Example: /tossduel 50")
+        return
+    db(context).upsert_user(update.effective_user)
+    if not db(context).has_credits(update.effective_user.id, stake):
+        await update.message.reply_text("Not enough virtual credits. Check /myprofile.")
+        return
+    game_id = f"{update.effective_chat.id}:{update.effective_user.id}:{random.randint(1000, 9999)}"
+    names = {"toss": "Toss Duel", "runrace": "Run Race", "wicketpick": "Wicket Hunt"}
+    fun_games(context)[game_id] = {
+        "game": game_key,
+        "stake": stake,
+        "creator_id": int(update.effective_user.id),
+        "creator_name": user_label(update.effective_user),
+    }
+    await update.message.reply_text(
+        f"{names[game_key]} opened by {user_label(update.effective_user)}.\n"
+        f"Virtual stake: {stake}. No real money, just group bragging rights.",
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Join game", callback_data=f"game:{game_id}")]]),
+    )
+
+
+async def tossduel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await start_fun_game(update, context, "toss")
+
+
+async def runrace(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await start_fun_game(update, context, "runrace")
+
+
+async def wicketpick(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await start_fun_game(update, context, "wicketpick")
+
+
+def resolve_fun_game(game: dict[str, Any], joiner_name: str, joiner_id: int) -> dict[str, Any]:
+    creator_name = game["creator_name"]
+    creator_id = int(game["creator_id"])
+    game_key = game["game"]
+    if game_key == "toss":
+        winner_id, winner_name = random.choice([(creator_id, creator_name), (joiner_id, joiner_name)])
+        detail = "The coin chose violence and one player chose celebration."
+    elif game_key == "runrace":
+        creator_score = sum(random.choice(RUN_CHOICES) for _ in range(6))
+        joiner_score = sum(random.choice(RUN_CHOICES) for _ in range(6))
+        if creator_score == joiner_score:
+            creator_score += random.choice((0, 1, 2, 4, 6))
+            joiner_score += random.choice((0, 1, 2, 4, 6))
+        winner_id, winner_name = (creator_id, creator_name) if creator_score >= joiner_score else (joiner_id, joiner_name)
+        detail = f"{creator_name} {creator_score} vs {joiner_name} {joiner_score}."
+    else:
+        creator_wickets = random.randint(0, 6)
+        joiner_wickets = random.randint(0, 6)
+        if creator_wickets == joiner_wickets:
+            creator_wickets += random.randint(0, 1)
+            joiner_wickets += random.randint(0, 1)
+        winner_id, winner_name = (
+            (creator_id, creator_name) if creator_wickets >= joiner_wickets else (joiner_id, joiner_name)
+        )
+        detail = f"{creator_name} {creator_wickets}W vs {joiner_name} {joiner_wickets}W."
+    loser_id = joiner_id if winner_id == creator_id else creator_id
+    loser_name = joiner_name if loser_id == joiner_id else creator_name
+    return {"winner_id": winner_id, "winner_name": winner_name, "loser_id": loser_id, "loser_name": loser_name, "detail": detail}
+
+
+async def handle_fun_game(update: Update, context: ContextTypes.DEFAULT_TYPE, data: str) -> None:
+    query = update.callback_query
+    user = update.effective_user
+    if not query or not user:
+        return
+    game_id = data.split(":", 1)[1]
+    game = fun_games(context).get(game_id)
+    if not game:
+        await query.answer("This game is over or expired.", show_alert=True)
+        return
+    if int(user.id) == int(game["creator_id"]):
+        await query.answer("Let someone else join your challenge.", show_alert=True)
+        return
+    stake = int(game["stake"])
+    db(context).upsert_user(user)
+    if not db(context).has_credits(user.id, stake):
+        await query.answer("You do not have enough virtual credits.", show_alert=True)
+        return
+    if not db(context).has_credits(game["creator_id"], stake):
+        fun_games(context).pop(game_id, None)
+        await query.answer("Creator no longer has enough credits.", show_alert=True)
+        return
+    fun_games(context).pop(game_id, None)
+    result = resolve_fun_game(game, user_label(user), int(user.id))
+    db(context).add_credits(result["loser_id"], -stake)
+    db(context).add_credits(result["winner_id"], stake)
+    db(context).record_game_result(result["winner_id"], True)
+    db(context).record_game_result(result["loser_id"], False)
+    await query.edit_message_text(
+        f"Virtual game complete.\n"
+        f"{result['detail']}\n"
+        f"Winner: {result['winner_name']} (+{stake} credits)\n"
+        f"{result['loser_name']} loses {stake} credits. No real money, only scoreboard pain."
+    )
 
 
 QUESTION_STARTERS = (
@@ -628,24 +928,39 @@ async def text_messages(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
                 team_key = action["team"]
                 player_id, display_name = resolve_player_from_message(update, context, text)
                 if not player_id:
-                    await update.message.reply_text(
-                        "Send a numeric Telegram id, or a @username that already exists in the bot database."
+                    await edit_team_menu_by_id(
+                        context,
+                        match,
+                        team_key,
+                        action.get("menu_message_id"),
+                        "Send a numeric Telegram id, or a @username that already exists in the bot database.",
                     )
                     return
                 if get_player(match, player_id):
-                    await update.message.reply_text("That player is already in this match.")
+                    await edit_team_menu_by_id(
+                        context,
+                        match,
+                        team_key,
+                        action.get("menu_message_id"),
+                        "That player is already in this match.",
+                    )
                     return
                 match.teams[team_key]["players"].append(new_player(player_id, display_name))
                 db(context).upsert_manual_player(player_id, display_name)
                 match.pending_action.pop(str(update.effective_user.id), None)
                 ensure_match_player_stats(match)
                 reset_ready(match)
-                await update.message.reply_text(f"Added {display_name} to {team_name(match, team_key)}.")
+                await edit_team_menu_by_id(
+                    context,
+                    match,
+                    team_key,
+                    action.get("menu_message_id"),
+                    f"Added {display_name} to {team_name(match, team_key)}.",
+                )
                 await save_and_show_setup(context, match)
                 return
 
-    if await maybe_answer_player_question(update, context, match, text):
-        return
+    return
 
 
 def resolve_player_from_message(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str) -> tuple[int | None, str]:
@@ -691,6 +1006,9 @@ async def callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     data = query.data or ""
     if data == "noop":
         return
+    if data.startswith("game:"):
+        await handle_fun_game(update, context, data)
+        return
 
     match = active_match(context, update.effective_chat.id)
     if not match:
@@ -725,6 +1043,8 @@ async def callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await handle_length(update, context, match, data.split(":", 1)[1])
     elif data.startswith("catch:"):
         await handle_catch(update, context, match, int(data.split(":")[1]))
+    elif data == "drs":
+        await handle_drs(update, context, match)
     elif data == "locked:bouncer":
         await query.answer("Bouncer option is locked after 2 bouncers in this over.", show_alert=True)
 
@@ -794,16 +1114,24 @@ async def handle_team_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, m
         await answer_not_you(query, player_name(match, match.teams[team_key]["captain_id"]))
         return
     if action == "add":
-        match.pending_action[str(user.id)] = {"type": "add", "team": team_key}
+        match.pending_action[str(user.id)] = {
+            "type": "add",
+            "team": team_key,
+            "menu_message_id": getattr(query.message, "message_id", None),
+        }
         db(context).save_match(match)
-        await query.message.reply_text(
+        await edit_query_message(
+            query,
             "Reply to a player, tag a Telegram user, or send a numeric Telegram id.\n"
-            "You can also use: /add <telegram_id> <name>"
+            "You can also use: /add <telegram_id> <name>",
+            InlineKeyboardMarkup([[InlineKeyboardButton("Back", callback_data=f"team:back:{team_key}")]]),
         )
     elif action == "remove":
-        await query.message.reply_text(f"Remove from {team_name(match, team_key)}:", reply_markup=remove_markup(match, team_key))
+        await edit_query_message(query, f"Remove from {team_name(match, team_key)}:", remove_markup(match, team_key))
     elif action == "select":
         await show_select_menu(update, match, team_key)
+    elif action == "back":
+        await edit_query_message(query, team_roster_text(match, team_key), team_menu_markup(match, team_key, user.id))
 
 
 async def show_select_menu(update: Update, match: Match, team_key: str) -> None:
@@ -812,16 +1140,16 @@ async def show_select_menu(update: Update, match: Match, team_key: str) -> None:
         return
     if team_key == match.batting_team:
         if match.current_batter_id and match.phase != "setup":
-            await query.message.reply_text(f"Current batter is already {player_name(match, match.current_batter_id)}.")
+            await edit_query_message(query, f"Current batter is already {player_name(match, match.current_batter_id)}.")
             return
-        await query.message.reply_text("Select a batter:", reply_markup=select_batter_markup(match, team_key))
+        await edit_query_message(query, "Select a batter:", select_batter_markup(match, team_key))
     elif team_key == match.bowling_team:
         if match.current_bowler_id and match.phase != "setup":
-            await query.message.reply_text(f"Current bowler is already {player_name(match, match.current_bowler_id)}.")
+            await edit_query_message(query, f"Current bowler is already {player_name(match, match.current_bowler_id)}.")
             return
-        await query.message.reply_text("Select a bowler:", reply_markup=select_bowler_markup(match, team_key))
+        await edit_query_message(query, "Select a bowler:", select_bowler_markup(match, team_key))
     else:
-        await query.message.reply_text("Toss is not complete yet.")
+        await edit_query_message(query, "Toss is not complete yet.")
 
 
 async def handle_remove(update: Update, context: ContextTypes.DEFAULT_TYPE, match: Match, data: str) -> None:
@@ -845,6 +1173,11 @@ async def handle_remove(update: Update, context: ContextTypes.DEFAULT_TYPE, matc
         match.current_bowler_style = None
     reset_ready(match)
     await save_and_show_setup(context, match)
+    await edit_query_message(
+        query,
+        f"Removed player.\n\n{team_roster_text(match, team_key)}",
+        team_menu_markup(match, team_key, int(user.id)),
+    )
 
 
 async def handle_pick_batter(update: Update, context: ContextTypes.DEFAULT_TYPE, match: Match, player_id: int) -> None:
@@ -861,7 +1194,11 @@ async def handle_pick_batter(update: Update, context: ContextTypes.DEFAULT_TYPE,
         return
     match.current_batter_id = player_id
     ensure_match_player_stats(match)
-    await query.message.reply_text(f"🏌️‍♂️ Current batter: {player['name']}")
+    await edit_query_message(
+        query,
+        f"Current batter: {player['name']}\n\n{team_roster_text(match, match.batting_team)}",
+        team_menu_markup(match, match.batting_team, int(user.id)),
+    )
     await maybe_resume_after_selection(context, match)
 
 
@@ -881,12 +1218,16 @@ async def handle_pick_bowler(update: Update, context: ContextTypes.DEFAULT_TYPE,
         match.current_bowler_id = player_id
         match.current_bowler_style = player["style"]
         ensure_match_player_stats(match)
-        await query.message.reply_text(f"⛹🏼‍♂️ Current bowler: {player['name']} ({player['style']})")
+        await edit_query_message(
+            query,
+            f"Current bowler: {player['name']} ({player['style']})\n\n{team_roster_text(match, match.bowling_team)}",
+            team_menu_markup(match, match.bowling_team, int(user.id)),
+        )
         await maybe_resume_after_selection(context, match)
     else:
         match.pending_action[str(user.id)] = {"type": "style", "team": match.bowling_team, "player_id": player_id}
         db(context).save_match(match)
-        await query.message.reply_text(f"Choose bowling style for {player['name']}:", reply_markup=style_markup(player_id))
+        await edit_query_message(query, f"Choose bowling style for {player['name']}:", style_markup(player_id))
 
 
 async def handle_style(update: Update, context: ContextTypes.DEFAULT_TYPE, match: Match, player_id: int, style: str) -> None:
@@ -905,7 +1246,11 @@ async def handle_style(update: Update, context: ContextTypes.DEFAULT_TYPE, match
     match.current_bowler_style = style
     match.pending_action.pop(str(user.id), None)
     ensure_match_player_stats(match)
-    await query.message.reply_text(f"⛹🏼‍♂️ Current bowler: {player['name']} ({style})")
+    await edit_query_message(
+        query,
+        f"Current bowler: {player['name']} ({style})\n\n{team_roster_text(match, match.bowling_team)}",
+        team_menu_markup(match, match.bowling_team, int(user.id)),
+    )
     await maybe_resume_after_selection(context, match)
 
 
@@ -1046,6 +1391,11 @@ async def handle_length(update: Update, context: ContextTypes.DEFAULT_TYPE, matc
     if int(user.id) != int(match.current_batter_id or 0):
         await answer_not_you(query, player_name(match, match.current_batter_id))
         return
+    if length == "Bouncer":
+        if int(match.over_state.get("batter_bouncers", 0)) >= 1:
+            await query.answer("Bouncer length is already used by the batter this over.", show_alert=True)
+            return
+        match.over_state["batter_bouncers"] = int(match.over_state.get("batter_bouncers", 0)) + 1
     style = match.pending_delivery["style"]
     code = int(match.pending_delivery["code"])
     run = int(match.pending_delivery["batter_run"])
@@ -1208,8 +1558,44 @@ def catch_result_text(result: dict[str, Any]) -> str:
 
 async def post_ball(context: ContextTypes.DEFAULT_TYPE, match: Match, result: dict[str, Any]) -> None:
     commentary = event_commentary(match, result)
+    review_team = result.get("drs_team")
+    reviewable = bool(result.get("reviewable")) and result.get("wicket_type") in {"LBW", "Stumped"}
+    review_markup = drs_markup(match, review_team) if reviewable else None
     if commentary:
-        await context.bot.send_message(match.chat_id, commentary)
+        text = commentary
+        if review_markup:
+            cap_id = match.teams[review_team]["captain_id"]
+            text += (
+                f"\n\nDRS available for {team_name(match, review_team)}. "
+                f"Captain {player_name(match, cap_id)} has 30 seconds."
+            )
+        await context.bot.send_message(match.chat_id, text, reply_markup=review_markup)
+
+    if review_markup:
+        match.pending_drs = {
+            "team_key": review_team,
+            "batter_id": result.get("batter_id"),
+            "bowler_id": result.get("bowler_id"),
+            "wicket_type": result.get("wicket_type"),
+            "result": result,
+        }
+        match.phase = "drs_window"
+        db(context).save_match(match)
+        if context.job_queue:
+            context.job_queue.run_once(
+                drs_timeout,
+                when=30,
+                data={"chat_id": match.chat_id},
+                name=f"drs-timeout-{match.chat_id}",
+            )
+        return
+
+    await continue_after_ball(context, match, result)
+
+
+async def continue_after_ball(context: ContextTypes.DEFAULT_TYPE, match: Match, result: dict[str, Any]) -> None:
+    if match.phase == "drs_window":
+        match.phase = "playing"
 
     if innings_over(match):
         await finish_innings_or_match(context, match)
@@ -1288,6 +1674,54 @@ async def post_ball(context: ContextTypes.DEFAULT_TYPE, match: Match, result: di
     db(context).save_match(match)
 
 
+async def handle_drs(update: Update, context: ContextTypes.DEFAULT_TYPE, match: Match) -> None:
+    query = update.callback_query
+    user = update.effective_user
+    if not query or not user:
+        return
+    if not match.pending_drs:
+        await query.answer("No active DRS review now.", show_alert=True)
+        return
+    team_key = str(match.pending_drs.get("team_key") or "")
+    cap_id = int(match.teams.get(team_key, {}).get("captain_id") or 0)
+    if int(user.id) != cap_id:
+        await answer_not_you(query, player_name(match, cap_id))
+        return
+    if int(match.drs_reviews.get(team_key, 0)) <= 0:
+        await query.answer("No DRS reviews left.", show_alert=True)
+        return
+    try:
+        await query.edit_message_reply_markup(reply_markup=None)
+    except BadRequest:
+        pass
+    decision = decide_drs(match)
+    if decision["status"] == "upheld":
+        await query.answer("DRS: wicket stays.", show_alert=True)
+        await query.message.reply_text(
+            f"DRS says OUT. Review lost. {team_name(match, team_key)} have {decision['reviews_left']} left."
+        )
+    elif decision["status"] == "overturned":
+        await query.answer("DRS: batter survives.", show_alert=True)
+        await query.message.reply_text(
+            f"DRS overturns it. Batter is back. {team_name(match, team_key)} keep {decision['reviews_left']} review(s)."
+        )
+    else:
+        await query.answer("DRS could not be resolved.", show_alert=True)
+        return
+    await continue_after_ball(context, match, decision["result"])
+
+
+async def drs_timeout(context: ContextTypes.DEFAULT_TYPE) -> None:
+    chat_id = int(context.job.data["chat_id"])
+    match = active_match(context, chat_id)
+    if not match or not match.pending_drs:
+        return
+    result = dict(match.pending_drs.get("result", {}))
+    match.pending_drs = None
+    await context.bot.send_message(chat_id, "DRS window closed. Wicket stands.")
+    await continue_after_ball(context, match, result)
+
+
 async def finish_innings_or_match(context: ContextTypes.DEFAULT_TYPE, match: Match) -> None:
     innings_record = {
         "innings": match.innings,
@@ -1309,6 +1743,7 @@ async def finish_innings_or_match(context: ContextTypes.DEFAULT_TYPE, match: Mat
         match.batting_team = old_bowling
         match.bowling_team = old_batting
         reset_score(match)
+        reset_drs_reviews(match)
         match.target = first_runs + 1
         for player in match.teams[match.batting_team]["players"]:
             player["out"] = False
@@ -1324,10 +1759,16 @@ async def finish_innings_or_match(context: ContextTypes.DEFAULT_TYPE, match: Mat
         return
 
     result_text = final_result(match)
-    db(context).apply_match_stats(match)
-    db(context).complete_match(match, match_summary(match, result_text))
-    await edit_main(context, match, f"{scoreboard(match)}\n\n🏁 {result_text}")
-    await context.bot.send_message(match.chat_id, f"🏁 MATCH COMPLETE\n{result_text}")
+    match.player_of_match = select_player_of_match(match, winning_team_key(match))
+    pom_id = int(match.player_of_match["id"]) if match.player_of_match else None
+    db(context).apply_match_stats(match, pom_id)
+    match_id = db(context).complete_match(match, match_summary(match, result_text))
+    final_text = f"Match #{match_id}\n{result_text}\n{player_of_match_text(match)}"
+    await edit_main(context, match, f"{scoreboard(match)}\n\n{final_text}")
+    await context.bot.send_message(
+        match.chat_id,
+        f"MATCH COMPLETE\n{final_text}\nUse /matchin {match_id} for full saved details.",
+    )
 
 
 def final_result(match: Match) -> str:
@@ -1346,6 +1787,18 @@ def final_result(match: Match) -> str:
     return f"{first_team} won by {margin} run(s)."
 
 
+def winning_team_key(match: Match) -> str | None:
+    if len(match.innings_history) < 2:
+        return None
+    first = match.innings_history[0]
+    second = match.innings_history[1]
+    if second["runs"] >= int(match.target or 0):
+        return match.batting_team
+    if first["runs"] == second["runs"]:
+        return None
+    return match.bowling_team
+
+
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     LOGGER.exception("Unhandled Telegram error", exc_info=context.error)
 
@@ -1356,12 +1809,21 @@ def run() -> None:
     application = Application.builder().token(cfg.telegram_bot_token).build()
     application.bot_data["db"] = database
     application.bot_data["settings"] = cfg
+    application.bot_data["fun_games"] = {}
 
     application.add_handler(CommandHandler("playmatch", playmatch))
     application.add_handler(CommandHandler("cancelmatch", cancelmatch))
     application.add_handler(CommandHandler("myteam", myteam))
     application.add_handler(CommandHandler("add", add_player))
     application.add_handler(CommandHandler("howplayed", howplayed))
+    application.add_handler(CommandHandler("ask", ask_match))
+    application.add_handler(CommandHandler("buzz", buzz))
+    application.add_handler(CommandHandler("matchin", matchin))
+    application.add_handler(CommandHandler("myprofile", myprofile))
+    application.add_handler(CommandHandler("games", games))
+    application.add_handler(CommandHandler("tossduel", tossduel))
+    application.add_handler(CommandHandler("runrace", runrace))
+    application.add_handler(CommandHandler("wicketpick", wicketpick))
     application.add_handler(CallbackQueryHandler(callbacks))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_messages))
     application.add_error_handler(error_handler)
