@@ -11,14 +11,15 @@ A Python Telegram bot for the Cricket Verse ball data and match flow you describ
 - Start stays locked until both teams have equal players and the starting batter/bowler are selected.
 - `/add` lets captains add a replied, tagged, or numeric-id player to their own team.
 - Match start needs group admin approval after both captains press Start.
-- Pacer and spinner delivery data, batter run + length selection, hard-ball logic, batter bouncer limit, extras, spam protocol, wickets, catch guesses, run outs, DRS, over changes, innings switch, target chase.
-- SQLite database stores player career stats, completed match snapshots with match ids, player-of-match records, and virtual credit profiles.
+- `/playmatch <overs> <powerplay_overs>` creates a match with optional powerplay overs.
+- Pacer and spinner delivery data, batter run + length selection, hard-ball logic, batter bouncer guess, powerplay rules, free hits, wide rebowls, extras, spam protocol, wickets, catch guesses, run outs, DRS, over changes, innings switch, target chase.
+- SQLite database stores player career stats, completed match snapshots with match ids, player-of-match records, and puzzle game records.
 - `/howplayed <telegram_id>` summarizes saved stats with Gemini when `GEMINI_API_KEY` is set.
 - `/ask` answers only live ongoing-match questions.
 - `/buzz` answers saved database/history/player-stat questions.
 - `/matchin <id>` shows full saved match details and every player line.
-- `/myprofile` shows cricket stats, virtual credits, and fun-game record.
-- Virtual-credit games are for entertainment only: no real money, no deposit, no withdrawal.
+- `/myprofile` shows cricket stats and puzzle record.
+- `/games` and `/puzzle` start button-based puzzle games.
 
 ## Setup
 
@@ -73,16 +74,15 @@ Free Render storage is temporary. With `DATABASE_PATH=/tmp/cricket_verse.sqlite3
 
 ## Commands
 
-- `/playmatch 5` - start a 5-over match.
+- `/playmatch 5 2` - start a 5-over match with 2 powerplay overs.
 - `/myteam` - captain team controls.
 - `/add <telegram_id> <name>` - captain-only quick add; also works when replying to or tagging a Telegram user.
 - `/howplayed 123456789` - Gemini/stat summary for a Telegram user id.
 - `/ask who is winning?` - live match analysis only.
 - `/buzz top runs` or `/buzz most wickets` - database-backed history and player stats.
 - `/matchin 12` - saved match details for match id 12.
-- `/myprofile` - your stats and virtual credits.
-- `/games` - list virtual-credit games.
-- `/tossduel 50`, `/runrace 50`, `/wicketpick 50` - PvP virtual-credit challenges.
+- `/myprofile` - your stats and puzzle game record.
+- `/games` or `/puzzle` - button puzzle arena.
 - `/cancelmatch` - end the active match in the chat.
 
 ## Ball Flow
@@ -92,9 +92,13 @@ Free Render storage is temporary. With `DATABASE_PATH=/tmp/cricket_verse.sqlite3
 3. Batter selects a run.
 4. Batter selects a length guess: Full, Yorker, Good, Short, and Bouncer when that delivery can be a bouncer.
 5. If the batter length matches the actual length, the batter gets the selected run. If it misses, MLR/hard-ball/wicket rules decide the result.
-6. For the first 3 hard balls in an over, length miss gives miss-length runs. Bouncers count toward that hard-ball cap.
-7. A batter can use the Bouncer length option once per over when it is offered.
-8. LBW and Stumped wickets offer DRS to the batting captain when reviews remain.
+6. For normal overs, the first 4 hard balls in an over use hard-ball restriction. In powerplay, only the first 2 hard balls are restricted.
+7. Bouncers count toward the hard-ball cap.
+8. The batter can guess Bouncer length once per over, even if the bowler did not press Bouncer.
+9. No-balls create a free hit for the next legal ball.
+10. Wides do not count as legal balls, so the delivery is rebowled.
+11. Powerplay has reduced catch-out chance.
+12. LBW and Stumped wickets offer DRS to the batting captain when reviews remain.
 
 ## AI Behavior
 
@@ -103,11 +107,11 @@ Free Render storage is temporary. With `DATABASE_PATH=/tmp/cricket_verse.sqlite3
 - Use `/buzz` for previous match details, leaderboards, player stats, and saved database facts.
 - Answers are short, English-only, cricket-focused, and can include light funny roast commentary.
 
-## Virtual Credits
+## Puzzle Games
 
-- Credits are in-bot entertainment points only.
-- There is no real-money gambling, buying, selling, deposit, withdrawal, or cash prize.
-- Fun-game winners gain virtual credits from the loser and records appear in `/myprofile`.
+- Old stake-style virtual-credit games are removed from the command surface.
+- Puzzle games use Telegram buttons only.
+- Puzzle wins and losses appear in `/myprofile`.
 
 ## Notes
 

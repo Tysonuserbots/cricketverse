@@ -110,11 +110,23 @@ def can_start_match(match: Match) -> bool:
     return team_sizes_equal(match) and bool(match.current_batter_id) and bool(match.current_bowler_id)
 
 
+def captain_changes_left(match: Match, cap_id: int) -> int:
+    used = int(match.captain_change_counts.get(str(cap_id), 0))
+    return max(0, 2 - used)
+
+
+def use_captain_change(match: Match, cap_id: int) -> int:
+    key = str(cap_id)
+    match.captain_change_counts[key] = int(match.captain_change_counts.get(key, 0)) + 1
+    return captain_changes_left(match, cap_id)
+
+
 def reset_ready(match: Match) -> None:
     match.ready = {str(cid): False for cid in captain_ids(match)}
 
 
 def reset_over_state(match: Match) -> None:
+    free_hit = bool(match.over_state.get("free_hit", False))
     match.over_state = {
         "delivery_counts": {},
         "last_code": None,
@@ -122,6 +134,7 @@ def reset_over_state(match: Match) -> None:
         "bouncers": 0,
         "hard_slots": 0,
         "batter_bouncers": 0,
+        "free_hit": free_hit,
     }
     match.score["over_events"] = []
 
@@ -150,6 +163,7 @@ def team_menu_markup(match: Match, team_key: str, cap_id: int) -> InlineKeyboard
             InlineKeyboardButton("Add", callback_data=f"team:add:{team_key}"),
             InlineKeyboardButton("Remove", callback_data=f"team:remove:{team_key}"),
             InlineKeyboardButton("Select", callback_data=f"team:select:{team_key}"),
+            InlineKeyboardButton("Change", callback_data=f"team:change:{team_key}"),
         ],
         [InlineKeyboardButton(ready_label, callback_data=f"ready:{cap_id}")],
     ]
@@ -197,6 +211,29 @@ def select_bowler_markup(match: Match, team_key: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(rows)
 
 
+def change_batter_markup(match: Match, team_key: str) -> InlineKeyboardMarkup:
+    rows = []
+    for idx, player in enumerate(available_batters(match, team_key), start=1):
+        if int(player["id"]) == int(match.current_batter_id or 0):
+            continue
+        rows.append([InlineKeyboardButton(f"{idx}. {player['name']}", callback_data=f"change_batter:{player['id']}")])
+    rows = rows or [[InlineKeyboardButton("No alternate batters", callback_data="noop")]]
+    rows.append([InlineKeyboardButton("Back", callback_data=f"team:back:{team_key}")])
+    return InlineKeyboardMarkup(rows)
+
+
+def change_bowler_markup(match: Match, team_key: str) -> InlineKeyboardMarkup:
+    rows = []
+    for idx, player in enumerate(match.teams[team_key]["players"], start=1):
+        if int(player["id"]) == int(match.current_bowler_id or 0):
+            continue
+        style = f" [{player['style']}]" if player.get("style") else ""
+        rows.append([InlineKeyboardButton(f"{idx}. {player['name']}{style}", callback_data=f"change_bowler:{player['id']}")])
+    rows = rows or [[InlineKeyboardButton("No alternate bowlers", callback_data="noop")]]
+    rows.append([InlineKeyboardButton("Back", callback_data=f"team:back:{team_key}")])
+    return InlineKeyboardMarkup(rows)
+
+
 def style_markup(player_id: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         [
@@ -239,7 +276,7 @@ def length_markup(match: Match) -> InlineKeyboardMarkup:
     code = int(match.pending_delivery.get("code", 0))
     delivery = DELIVERIES_BY_STYLE[style][code]
     lengths = ["Full", "Yorker", "Good", "Short"]
-    if "Bouncer" in delivery.lengths and int(match.over_state.get("batter_bouncers", 0)) < 1:
+    if int(match.over_state.get("batter_bouncers", 0)) < 1:
         lengths.append("Bouncer")
     rows = []
     row = []
@@ -370,17 +407,25 @@ async def playmatch(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.message.reply_text("A match is already active in this chat. Use /cancelmatch to stop it.")
         return
     if not context.args or not context.args[0].isdigit():
-        await update.message.reply_text("Use: /playmatch <overs>")
+        await update.message.reply_text("Use: /playmatch <overs> <powerplay_overs>")
         return
     overs = int(context.args[0])
     if overs < 1 or overs > 50:
         await update.message.reply_text("Overs must be between 1 and 50.")
         return
+    if len(context.args) > 1 and not context.args[1].isdigit():
+        await update.message.reply_text("Powerplay overs must be a number. Example: /playmatch 5 2")
+        return
+    pp_overs = int(context.args[1]) if len(context.args) > 1 else 0
+    if pp_overs < 0 or pp_overs > overs:
+        await update.message.reply_text("Powerplay overs must be from 0 up to total overs.")
+        return
 
     db(context).upsert_user(update.effective_user)
-    match = make_match(chat_id, overs, update.effective_user.id, user_label(update.effective_user))
+    match = make_match(chat_id, overs, update.effective_user.id, user_label(update.effective_user), pp_overs)
     sent = await update.message.reply_text(
         f"🏏 Cricket Verse match created for {overs} over(s).\n"
+        f"Powerplay: {pp_overs} over(s).\n"
         f"Captain 1: {match.captains['A']['name']}\n\n"
         f"Waiting for Captain 2.",
         reply_markup=join_markup(),
@@ -525,7 +570,6 @@ def buzz_payload(update: Update, context: ContextTypes.DEFAULT_TYPE, question: s
             "wickets": db(context).career_leaders("wickets", 5),
             "catches": db(context).career_leaders("catches", 5),
             "player_of_match": db(context).career_leaders("player_of_match", 5),
-            "credits": db(context).career_leaders("credits", 5),
         },
     }
     id_match = re.search(r"\b\d+\b", question)
@@ -576,133 +620,114 @@ async def myprofile(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(profile_text(profile))
 
 
-def parse_stake(args: list[str]) -> int | None:
-    if not args or not args[0].isdigit():
-        return None
-    stake = int(args[0])
-    if stake < 10 or stake > 500:
-        return None
-    return stake
-
-
-def fun_games(context: ContextTypes.DEFAULT_TYPE) -> dict[str, dict[str, Any]]:
-    return context.application.bot_data.setdefault("fun_games", {})
+def puzzle_games(context: ContextTypes.DEFAULT_TYPE) -> dict[str, dict[str, Any]]:
+    return context.application.bot_data.setdefault("puzzle_games", {})
 
 
 async def games(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.message:
         return
     await update.message.reply_text(
-        "Virtual-credit games only. No real money.\n"
-        "/tossduel <10-500> - random toss duel\n"
-        "/runrace <10-500> - six-ball run race\n"
-        "/wicketpick <10-500> - wicket hunt duel\n"
-        "Another player joins from the button. Winner gets the virtual stake."
+        "Puzzle arena. Play with buttons, no money, no stakes.\nChoose one:",
+        reply_markup=InlineKeyboardMarkup(
+            [
+                [InlineKeyboardButton("Number Lock", callback_data="puzzle:start:math")],
+                [InlineKeyboardButton("Pattern Chase", callback_data="puzzle:start:sequence")],
+                [InlineKeyboardButton("Cricket Brain", callback_data="puzzle:start:cricket")],
+            ]
+        ),
     )
 
 
-async def start_fun_game(update: Update, context: ContextTypes.DEFAULT_TYPE, game_key: str) -> None:
-    if not update.effective_chat or not update.effective_user or not update.message:
-        return
-    stake = parse_stake(context.args)
-    if stake is None:
-        await update.message.reply_text("Use a virtual stake from 10 to 500. Example: /tossduel 50")
-        return
-    db(context).upsert_user(update.effective_user)
-    if not db(context).has_credits(update.effective_user.id, stake):
-        await update.message.reply_text("Not enough virtual credits. Check /myprofile.")
-        return
-    game_id = f"{update.effective_chat.id}:{update.effective_user.id}:{random.randint(1000, 9999)}"
-    names = {"toss": "Toss Duel", "runrace": "Run Race", "wicketpick": "Wicket Hunt"}
-    fun_games(context)[game_id] = {
-        "game": game_key,
-        "stake": stake,
-        "creator_id": int(update.effective_user.id),
-        "creator_name": user_label(update.effective_user),
-    }
-    await update.message.reply_text(
-        f"{names[game_key]} opened by {user_label(update.effective_user)}.\n"
-        f"Virtual stake: {stake}. No real money, just group bragging rights.",
-        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Join game", callback_data=f"game:{game_id}")]]),
-    )
+async def puzzle(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await games(update, context)
 
 
-async def tossduel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await start_fun_game(update, context, "toss")
-
-
-async def runrace(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await start_fun_game(update, context, "runrace")
-
-
-async def wicketpick(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await start_fun_game(update, context, "wicketpick")
-
-
-def resolve_fun_game(game: dict[str, Any], joiner_name: str, joiner_id: int) -> dict[str, Any]:
-    creator_name = game["creator_name"]
-    creator_id = int(game["creator_id"])
-    game_key = game["game"]
-    if game_key == "toss":
-        winner_id, winner_name = random.choice([(creator_id, creator_name), (joiner_id, joiner_name)])
-        detail = "The coin chose violence and one player chose celebration."
-    elif game_key == "runrace":
-        creator_score = sum(random.choice(RUN_CHOICES) for _ in range(6))
-        joiner_score = sum(random.choice(RUN_CHOICES) for _ in range(6))
-        if creator_score == joiner_score:
-            creator_score += random.choice((0, 1, 2, 4, 6))
-            joiner_score += random.choice((0, 1, 2, 4, 6))
-        winner_id, winner_name = (creator_id, creator_name) if creator_score >= joiner_score else (joiner_id, joiner_name)
-        detail = f"{creator_name} {creator_score} vs {joiner_name} {joiner_score}."
+def make_puzzle(kind: str) -> dict[str, Any]:
+    if kind == "math":
+        a = random.randint(8, 30)
+        b = random.randint(3, 15)
+        c = random.randint(2, 9)
+        answer = a + b * c
+        question = f"Number Lock: {a} + {b} x {c} = ?"
+    elif kind == "sequence":
+        start = random.randint(1, 8)
+        step = random.randint(2, 6)
+        answer = start + step * 4
+        question = f"Pattern Chase: {start}, {start + step}, {start + step * 2}, {start + step * 3}, ?"
     else:
-        creator_wickets = random.randint(0, 6)
-        joiner_wickets = random.randint(0, 6)
-        if creator_wickets == joiner_wickets:
-            creator_wickets += random.randint(0, 1)
-            joiner_wickets += random.randint(0, 1)
-        winner_id, winner_name = (
-            (creator_id, creator_name) if creator_wickets >= joiner_wickets else (joiner_id, joiner_name)
-        )
-        detail = f"{creator_name} {creator_wickets}W vs {joiner_name} {joiner_wickets}W."
-    loser_id = joiner_id if winner_id == creator_id else creator_id
-    loser_name = joiner_name if loser_id == joiner_id else creator_name
-    return {"winner_id": winner_id, "winner_name": winner_name, "loser_id": loser_id, "loser_name": loser_name, "detail": detail}
+        needed = random.choice([8, 10, 12, 15])
+        balls = random.choice([3, 4, 6])
+        if needed <= balls:
+            answer = "rotate strike"
+        elif needed <= balls * 2:
+            answer = "target gaps"
+        else:
+            answer = "attack boundary"
+        question = f"Cricket Brain: Need {needed} from {balls} balls. Best plan?"
+        options = ["rotate strike", "target gaps", "attack boundary", "block it"]
+        return {"question": question, "options": options, "answer": options.index(answer)}
+
+    options = {answer}
+    while len(options) < 4:
+        options.add(answer + random.choice([-9, -6, -4, -3, 3, 4, 6, 9]))
+    option_list = list(options)
+    random.shuffle(option_list)
+    return {"question": question, "options": [str(item) for item in option_list], "answer": option_list.index(answer)}
 
 
-async def handle_fun_game(update: Update, context: ContextTypes.DEFAULT_TYPE, data: str) -> None:
+async def start_puzzle_from_query(query: Any, context: ContextTypes.DEFAULT_TYPE, kind: str) -> None:
+    puzzle_id = f"{random.randint(1000, 9999)}{random.randint(1000, 9999)}"
+    puzzle_data = make_puzzle(kind)
+    puzzle_games(context)[puzzle_id] = puzzle_data
+    buttons = [
+        [InlineKeyboardButton(option, callback_data=f"puzzle:ans:{puzzle_id}:{idx}")]
+        for idx, option in enumerate(puzzle_data["options"])
+    ]
+    await edit_query_message(
+        query,
+        f"{puzzle_data['question']}\nPick the answer before someone steals the glory.",
+        InlineKeyboardMarkup(buttons),
+    )
+
+
+async def handle_puzzle(update: Update, context: ContextTypes.DEFAULT_TYPE, data: str) -> None:
     query = update.callback_query
     user = update.effective_user
     if not query or not user:
         return
-    game_id = data.split(":", 1)[1]
-    game = fun_games(context).get(game_id)
-    if not game:
-        await query.answer("This game is over or expired.", show_alert=True)
+    parts = data.split(":")
+    if len(parts) >= 3 and parts[1] == "start":
+        await start_puzzle_from_query(query, context, parts[2])
         return
-    if int(user.id) == int(game["creator_id"]):
-        await query.answer("Let someone else join your challenge.", show_alert=True)
+    if len(parts) != 4 or parts[1] != "ans":
+        await query.answer("Puzzle expired.", show_alert=True)
         return
-    stake = int(game["stake"])
+    puzzle_id = parts[2]
+    if not parts[3].isdigit():
+        await query.answer("Puzzle expired.", show_alert=True)
+        return
+    picked = int(parts[3])
+    puzzle_data = puzzle_games(context).pop(puzzle_id, None)
+    if not puzzle_data:
+        await query.answer("Puzzle already finished.", show_alert=True)
+        return
+    correct = picked == int(puzzle_data["answer"])
     db(context).upsert_user(user)
-    if not db(context).has_credits(user.id, stake):
-        await query.answer("You do not have enough virtual credits.", show_alert=True)
-        return
-    if not db(context).has_credits(game["creator_id"], stake):
-        fun_games(context).pop(game_id, None)
-        await query.answer("Creator no longer has enough credits.", show_alert=True)
-        return
-    fun_games(context).pop(game_id, None)
-    result = resolve_fun_game(game, user_label(user), int(user.id))
-    db(context).add_credits(result["loser_id"], -stake)
-    db(context).add_credits(result["winner_id"], stake)
-    db(context).record_game_result(result["winner_id"], True)
-    db(context).record_game_result(result["loser_id"], False)
-    await query.edit_message_text(
-        f"Virtual game complete.\n"
-        f"{result['detail']}\n"
-        f"Winner: {result['winner_name']} (+{stake} credits)\n"
-        f"{result['loser_name']} loses {stake} credits. No real money, only scoreboard pain."
-    )
+    db(context).record_game_result(user.id, correct)
+    if correct:
+        await query.answer("Solved.", show_alert=True)
+        await edit_query_message(
+            query,
+            f"{user_label(user)} solved it.\n{puzzle_data['question']}\nAnswer: {puzzle_data['options'][picked]}\nClean brain, captain energy.",
+        )
+    else:
+        answer = puzzle_data["options"][int(puzzle_data["answer"])]
+        await query.answer("Wrong answer.", show_alert=True)
+        await edit_query_message(
+            query,
+            f"{user_label(user)} missed it.\n{puzzle_data['question']}\nCorrect answer: {answer}\nThat decision review is gone forever.",
+        )
 
 
 QUESTION_STARTERS = (
@@ -1006,8 +1031,8 @@ async def callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     data = query.data or ""
     if data == "noop":
         return
-    if data.startswith("game:"):
-        await handle_fun_game(update, context, data)
+    if data.startswith("puzzle:"):
+        await handle_puzzle(update, context, data)
         return
 
     match = active_match(context, update.effective_chat.id)
@@ -1028,6 +1053,10 @@ async def callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await handle_pick_batter(update, context, match, int(data.split(":")[1]))
     elif data.startswith("pick_bowler:"):
         await handle_pick_bowler(update, context, match, int(data.split(":")[1]))
+    elif data.startswith("change_batter:"):
+        await handle_change_batter(update, context, match, int(data.split(":")[1]))
+    elif data.startswith("change_bowler:"):
+        await handle_change_bowler(update, context, match, int(data.split(":")[1]))
     elif data.startswith("style:"):
         _, player_id, style = data.split(":")
         await handle_style(update, context, match, int(player_id), style)
@@ -1130,6 +1159,8 @@ async def handle_team_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, m
         await edit_query_message(query, f"Remove from {team_name(match, team_key)}:", remove_markup(match, team_key))
     elif action == "select":
         await show_select_menu(update, match, team_key)
+    elif action == "change":
+        await show_change_menu(update, match, team_key, user.id)
     elif action == "back":
         await edit_query_message(query, team_roster_text(match, team_key), team_menu_markup(match, team_key, user.id))
 
@@ -1150,6 +1181,25 @@ async def show_select_menu(update: Update, match: Match, team_key: str) -> None:
         await edit_query_message(query, "Select a bowler:", select_bowler_markup(match, team_key))
     else:
         await edit_query_message(query, "Toss is not complete yet.")
+
+
+async def show_change_menu(update: Update, match: Match, team_key: str, cap_id: int) -> None:
+    query = update.callback_query
+    if not query:
+        return
+    if match.phase != "playing":
+        await query.answer("Mid-match change is available only while play is live.", show_alert=True)
+        return
+    left = captain_changes_left(match, cap_id)
+    if left <= 0:
+        await query.answer("You already used your 2 mid-match changes.", show_alert=True)
+        return
+    if team_key == match.batting_team:
+        await edit_query_message(query, f"Change batter ({left} left):", change_batter_markup(match, team_key))
+    elif team_key == match.bowling_team:
+        await edit_query_message(query, f"Change bowler ({left} left):", change_bowler_markup(match, team_key))
+    else:
+        await query.answer("Team role is not ready yet.", show_alert=True)
 
 
 async def handle_remove(update: Update, context: ContextTypes.DEFAULT_TYPE, match: Match, data: str) -> None:
@@ -1230,6 +1280,82 @@ async def handle_pick_bowler(update: Update, context: ContextTypes.DEFAULT_TYPE,
         await edit_query_message(query, f"Choose bowling style for {player['name']}:", style_markup(player_id))
 
 
+async def handle_change_batter(update: Update, context: ContextTypes.DEFAULT_TYPE, match: Match, player_id: int) -> None:
+    query = update.callback_query
+    user = update.effective_user
+    if not query or not user or not match.batting_team:
+        return
+    if match.phase != "playing":
+        await query.answer("Wait until the live play screen is active.", show_alert=True)
+        return
+    if captain_team(match, user.id) != match.batting_team:
+        await answer_not_you(query, player_name(match, match.teams[match.batting_team]["captain_id"]))
+        return
+    if captain_changes_left(match, user.id) <= 0:
+        await query.answer("You already used your 2 mid-match changes.", show_alert=True)
+        return
+    player = get_player(match, player_id)
+    if not player or get_team_key_for_player(match, player_id) != match.batting_team or player.get("out"):
+        await query.answer("This batter is not available.", show_alert=True)
+        return
+    if int(player_id) == int(match.current_batter_id or 0):
+        await query.answer("That batter is already on strike.", show_alert=True)
+        return
+    match.current_batter_id = player_id
+    left = use_captain_change(match, user.id)
+    ensure_match_player_stats(match)
+    await edit_query_message(
+        query,
+        f"Batter changed to {player['name']}. Changes left: {left}\n\n{team_roster_text(match, match.batting_team)}",
+        team_menu_markup(match, match.batting_team, int(user.id)),
+    )
+    await edit_main(context, match, scoreboard(match), bowling_markup(match))
+    db(context).save_match(match)
+
+
+async def handle_change_bowler(update: Update, context: ContextTypes.DEFAULT_TYPE, match: Match, player_id: int) -> None:
+    query = update.callback_query
+    user = update.effective_user
+    if not query or not user or not match.bowling_team:
+        return
+    if match.phase != "playing":
+        await query.answer("Wait until the live play screen is active.", show_alert=True)
+        return
+    if captain_team(match, user.id) != match.bowling_team:
+        await answer_not_you(query, player_name(match, match.teams[match.bowling_team]["captain_id"]))
+        return
+    if captain_changes_left(match, user.id) <= 0:
+        await query.answer("You already used your 2 mid-match changes.", show_alert=True)
+        return
+    player = get_player(match, player_id)
+    if not player or get_team_key_for_player(match, player_id) != match.bowling_team:
+        await query.answer("This bowler is not available.", show_alert=True)
+        return
+    if int(player_id) == int(match.current_bowler_id or 0):
+        await query.answer("That bowler is already bowling.", show_alert=True)
+        return
+    if player.get("style"):
+        match.current_bowler_id = player_id
+        match.current_bowler_style = player["style"]
+        left = use_captain_change(match, user.id)
+        ensure_match_player_stats(match)
+        await edit_query_message(
+            query,
+            f"Bowler changed to {player['name']} ({player['style']}). Changes left: {left}\n\n{team_roster_text(match, match.bowling_team)}",
+            team_menu_markup(match, match.bowling_team, int(user.id)),
+        )
+        await edit_main(context, match, scoreboard(match), bowling_markup(match))
+        db(context).save_match(match)
+        return
+    match.pending_action[str(user.id)] = {
+        "type": "style_change",
+        "team": match.bowling_team,
+        "player_id": player_id,
+    }
+    db(context).save_match(match)
+    await edit_query_message(query, f"Choose bowling style for {player['name']}:", style_markup(player_id))
+
+
 async def handle_style(update: Update, context: ContextTypes.DEFAULT_TYPE, match: Match, player_id: int, style: str) -> None:
     query = update.callback_query
     user = update.effective_user
@@ -1244,11 +1370,15 @@ async def handle_style(update: Update, context: ContextTypes.DEFAULT_TYPE, match
     player["style"] = style
     match.current_bowler_id = player_id
     match.current_bowler_style = style
+    action = match.pending_action.get(str(user.id), {})
+    left_text = ""
+    if action.get("type") == "style_change":
+        left_text = f" Changes left: {use_captain_change(match, user.id)}"
     match.pending_action.pop(str(user.id), None)
     ensure_match_player_stats(match)
     await edit_query_message(
         query,
-        f"Current bowler: {player['name']} ({style})\n\n{team_roster_text(match, match.bowling_team)}",
+        f"Current bowler: {player['name']} ({style}).{left_text}\n\n{team_roster_text(match, match.bowling_team)}",
         team_menu_markup(match, match.bowling_team, int(user.id)),
     )
     await maybe_resume_after_selection(context, match)
@@ -1456,25 +1586,28 @@ def event_commentary(match: Match, result: dict[str, Any]) -> str | None:
     batter = player_name(match, match.current_batter_id)
     bowler = player_name(match, match.current_bowler_id)
     status = result.get("status")
+    last_over_pressure = balls_left(match) <= 6 or (
+        match.innings == 2 and match.target and max(0, int(match.target) - int(match.score.get("runs", 0))) <= 12
+    )
 
     if status == "extra":
         extra = result.get("extra")
         if extra == "wide":
             return random.choice(
                 [
-                    f"Wide called. {bowler} loses the line and the batting side gets one extra.",
-                    f"That drifts outside reach. Wide ball, one run added.",
+                    f"Wide called. {bowler} loses the line: +1 and that ball must be bowled again.",
+                    f"That drifts outside reach. Wide ball, one added, rebowl coming.",
                     f"Loose from {bowler}. The umpire stretches the arms for a wide.",
-                    "Wide. That one needed its own map back to the pitch.",
+                    "Wide. That one needed its own map back to the pitch. Reball, pressure still alive.",
                 ]
             )
         if extra == "no_ball":
             return random.choice(
                 [
-                    f"No ball from {bowler}. Free run added, and the pressure stays on the bowler.",
-                    f"Front line trouble. No ball called, {result.get('runs', 1)} added.",
-                    f"Illegal delivery. No ball, and the batting team will take that gladly.",
-                    "No ball. The crease has filed a complaint.",
+                    f"No ball from {bowler}. {result.get('runs', 1)} added and the next ball is a FREE HIT.",
+                    f"Front line trouble. No ball called, {result.get('runs', 1)} added. Free hit loading.",
+                    f"Illegal delivery. No ball, free hit next. The bowler just handed out a gift voucher.",
+                    "No ball. The crease has filed a complaint, and the batter gets a free swing next.",
                 ]
             )
         if extra == "leg_bye":
@@ -1489,6 +1622,14 @@ def event_commentary(match: Match, result: dict[str, Any]) -> str | None:
 
     if status == "wicket":
         wicket_type = result.get("wicket_type", "Wicket")
+        if last_over_pressure:
+            return random.choice(
+                [
+                    f"{wicket_type}! Last-over nerves explode. This match just kicked the door open.",
+                    f"{wicket_type}! Absolute pressure theft from {bowler}. The chase is sweating now.",
+                    f"{wicket_type}! In the crunch, the batter blinked first. Brutal timing.",
+                ]
+            )
         return random.choice(
             [
                 f"Big moment. {wicket_type}! {bowler} breaks through when it matters.",
@@ -1517,6 +1658,23 @@ def event_commentary(match: Match, result: dict[str, Any]) -> str | None:
                 f"That was in the air, but it does not stick. The batting side steals {result.get('runs', 0)}.",
                 f"Drop catch. A real let-off, and the score moves by {result.get('runs', 0)}.",
                 f"Dropped. Somewhere, the bowler just stared into the middle distance.",
+            ]
+        )
+
+    if status == "runs" and result.get("free_hit"):
+        return random.choice(
+            [
+                f"Free hit used for {result.get('runs', 0)}. No wicket fear, just vibes and violence.",
+                f"Free hit done: {result.get('runs', 0)} run(s). The bowler survives, but the group chat will remember.",
+            ]
+        )
+
+    if status == "runs" and last_over_pressure:
+        return random.choice(
+            [
+                f"{result.get('runs', 0)} run(s). Every ball is now a tiny heart attack.",
+                f"{batter} takes {result.get('runs', 0)}. Last-over pressure is chewing nails.",
+                f"{result.get('runs', 0)} added. This finish is getting loud.",
             ]
         )
 
@@ -1809,7 +1967,7 @@ def run() -> None:
     application = Application.builder().token(cfg.telegram_bot_token).build()
     application.bot_data["db"] = database
     application.bot_data["settings"] = cfg
-    application.bot_data["fun_games"] = {}
+    application.bot_data["puzzle_games"] = {}
 
     application.add_handler(CommandHandler("playmatch", playmatch))
     application.add_handler(CommandHandler("cancelmatch", cancelmatch))
@@ -1821,9 +1979,7 @@ def run() -> None:
     application.add_handler(CommandHandler("matchin", matchin))
     application.add_handler(CommandHandler("myprofile", myprofile))
     application.add_handler(CommandHandler("games", games))
-    application.add_handler(CommandHandler("tossduel", tossduel))
-    application.add_handler(CommandHandler("runrace", runrace))
-    application.add_handler(CommandHandler("wicketpick", wicketpick))
+    application.add_handler(CommandHandler("puzzle", puzzle))
     application.add_handler(CallbackQueryHandler(callbacks))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_messages))
     application.add_error_handler(error_handler)
