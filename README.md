@@ -18,8 +18,10 @@ A Python Telegram bot for the Cricket Verse ball data and match flow you describ
 - `/ask` answers only live ongoing-match questions.
 - `/buzz` answers saved database/history/player-stat questions.
 - `/matchin <id>` shows full saved match details and every player line.
+- `/logs <num>` lets group admins inspect recent batter/bowler button presses.
+- `/exp` explains the last completed ball with run/wicket reason and probability notes.
 - `/myprofile` shows cricket stats and puzzle record.
-- `/games` and `/puzzle` start button-based puzzle games.
+- `/games`, `/puzzle`, and `/2048` start button-based puzzle games.
 
 ## Setup
 
@@ -81,8 +83,11 @@ Free Render storage is temporary. With `DATABASE_PATH=/tmp/cricket_verse.sqlite3
 - `/ask who is winning?` - live match analysis only.
 - `/buzz top runs` or `/buzz most wickets` - database-backed history and player stats.
 - `/matchin 12` - saved match details for match id 12.
+- `/logs 10` - admin-only last 10 batter/bowler button presses.
+- `/exp` - explain the last live ball result.
 - `/myprofile` - your stats and puzzle game record.
 - `/games` or `/puzzle` - button puzzle arena.
+- `/2048` - start a button-based 2048 board directly.
 - `/cancelmatch` - end the active match in the chat.
 
 ## Ball Flow
@@ -111,6 +116,7 @@ Free Render storage is temporary. With `DATABASE_PATH=/tmp/cricket_verse.sqlite3
 
 - Old stake-style virtual-credit games are removed from the command surface.
 - Puzzle games use Telegram buttons only.
+- 2048 is available from `/games` and directly with `/2048`.
 - Puzzle wins and losses appear in `/myprofile`.
 
 ## Notes

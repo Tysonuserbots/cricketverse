@@ -80,6 +80,7 @@ class Match:
     drs_reviews: dict[str, int] = field(default_factory=lambda: {"A": 2, "B": 2})
     player_of_match: dict[str, Any] | None = None
     captain_change_counts: dict[str, int] = field(default_factory=dict)
+    button_logs: list[dict[str, Any]] = field(default_factory=list)
     target: int | None = None
 
     def to_dict(self) -> dict[str, Any]:
@@ -111,6 +112,7 @@ class Match:
             "drs_reviews": self.drs_reviews,
             "player_of_match": self.player_of_match,
             "captain_change_counts": self.captain_change_counts,
+            "button_logs": self.button_logs,
             "target": self.target,
         }
 
@@ -144,6 +146,7 @@ def reset_score(match: Match) -> None:
         "timeline": [],
         "last_delivery": "None",
         "last_length_ok": None,
+        "last_explanation": None,
         "over_events": [],
     }
     match.over_state = {
