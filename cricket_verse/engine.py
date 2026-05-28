@@ -456,11 +456,12 @@ def resolve_pending_delivery(match: Match) -> dict[str, Any]:
     bat_runs = score_runs_for_ball(match, style, code, length, batter_run, length_ok)
 
     if extra == "no_ball":
-        total = bat_runs + 1
+        mrl_runs = miss_runs(style, code, length, batter_run)
+        total = mrl_runs + 1
         token = f"{total}NB"
         apply_ball(
             match,
-            bat_runs=bat_runs,
+            bat_runs=mrl_runs,
             extra_runs=1,
             legal=False,
             timeline_token=token,
@@ -482,7 +483,7 @@ def resolve_pending_delivery(match: Match) -> dict[str, Any]:
                 **explain,
                 "outcome": "No ball",
                 "runs": total,
-                "reason": "No-ball adds 1 extra, does not count as a legal ball, and sets a free hit for the next legal ball.",
+                "reason": "No-ball adds 1 extra, does not count as a legal ball, uses MRL runs, and sets a free hit for the next legal ball.",
             },
         }
 

@@ -8,6 +8,9 @@ from typing import Any
 from .models import Match
 
 
+STARTING_CREDITS = 1000
+
+
 class Database:
     def __init__(self, path: str) -> None:
         self.path = Path(path)
@@ -67,6 +70,7 @@ class Database:
         self._ensure_column("career_stats", "games_played", "INTEGER NOT NULL DEFAULT 0")
         self._ensure_column("career_stats", "games_won", "INTEGER NOT NULL DEFAULT 0")
         self._ensure_column("career_stats", "games_lost", "INTEGER NOT NULL DEFAULT 0")
+        self._ensure_column("career_stats", "credits", f"INTEGER NOT NULL DEFAULT {STARTING_CREDITS}")
         self.conn.commit()
 
     def _ensure_column(self, table: str, column: str, definition: str) -> None:
@@ -316,6 +320,19 @@ class Database:
 
     def profile(self, tg_id: int) -> dict[str, Any] | None:
         return self.player_stats(tg_id)
+
+    def has_credits(self, tg_id: int, amount: int) -> bool:
+        self.conn.execute("INSERT OR IGNORE INTO career_stats (tg_id) VALUES (?)", (int(tg_id),))
+        row = self.conn.execute("SELECT credits FROM career_stats WHERE tg_id = ?", (int(tg_id),)).fetchone()
+        return bool(row and int(row["credits"]) >= int(amount))
+
+    def add_credits(self, tg_id: int, amount: int) -> None:
+        self.conn.execute("INSERT OR IGNORE INTO career_stats (tg_id) VALUES (?)", (int(tg_id),))
+        self.conn.execute(
+            "UPDATE career_stats SET credits = MAX(0, credits + ?) WHERE tg_id = ?",
+            (int(amount), int(tg_id)),
+        )
+        self.conn.commit()
 
     def record_game_result(self, tg_id: int, won: bool) -> None:
         self.conn.execute("INSERT OR IGNORE INTO career_stats (tg_id) VALUES (?)", (int(tg_id),))

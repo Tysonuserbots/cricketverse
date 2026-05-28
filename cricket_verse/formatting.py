@@ -234,7 +234,9 @@ def profile_text(profile: dict[str, Any]) -> str:
     sr = runs * 100 / balls if balls else 0.0
     return (
         f"{profile.get('display_name', profile.get('tg_id'))}\n"
+        f"Credits: {profile.get('credits', 0)}\n"
         f"Matches: {profile.get('matches', 0)} | Runs: {runs} | SR: {sr:.2f}\n"
         f"Wickets: {profile.get('wickets', 0)} | Catches: {profile.get('catches', 0)} | POTM: {profile.get('player_of_match', 0)}\n"
-        f"Puzzle games: {profile.get('games_won', 0)}W/{profile.get('games_lost', 0)}L from {profile.get('games_played', 0)}"
+        f"Games: {profile.get('games_won', 0)}W/{profile.get('games_lost', 0)}L from {profile.get('games_played', 0)}\n"
+        "Credits are only in-bot points. No real money."
     )

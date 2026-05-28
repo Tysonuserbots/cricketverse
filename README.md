@@ -10,18 +10,23 @@ A Python Telegram bot for the Cricket Verse ball data and match flow you describ
 - `/myteam` works only for captains during an active match and shows only that captain's own team.
 - Start stays locked until both teams have equal players and the starting batter/bowler are selected.
 - `/add` lets captains add a replied, tagged, or numeric-id player to their own team.
-- Match start needs group admin approval after both captains press Start.
+- Only the initial match start needs group admin approval after both captains press Start.
 - `/playmatch <overs> <powerplay_overs>` creates a match with optional powerplay overs.
 - Pacer and spinner delivery data, batter run + length selection, hard-ball logic, batter bouncer guess, powerplay rules, free hits, wide rebowls, extras, spam protocol, wickets, catch guesses, run outs, DRS, over changes, innings switch, target chase.
 - SQLite database stores player career stats, completed match snapshots with match ids, player-of-match records, and puzzle game records.
+- `/start` checks bot health and ping. `/help` lists public commands only.
 - `/howplayed <telegram_id>` summarizes saved stats with Gemini when `GEMINI_API_KEY` is set.
 - `/ask` answers only live ongoing-match questions.
 - `/buzz` answers saved database/history/player-stat questions.
 - `/matchin <id>` shows full saved match details and every player line.
-- `/logs <num>` lets group admins inspect recent batter/bowler button presses.
+- `/logs <num>` lets owner id `6262064767` inspect recent batter/bowler button presses.
+- `/spam <num>` lets owner id `6262064767` repeat text or a replied message 1 to 100 times.
 - `/exp` explains the last completed ball with run/wicket reason and probability notes.
 - `/myprofile` shows cricket stats and puzzle record.
-- `/games`, `/puzzle`, and `/2048` start button-based puzzle games.
+- `/games` and `/puzzle` start button-based puzzle games.
+- `/pvp <overs> <powerplay_overs>` starts a 1v1 match with no team building.
+- `/guide` shows simple help pages with Next, Back, and Close buttons.
+- `/casino`, `/bet`, `/dice`, and `/roll` use virtual in-bot credits only.
 
 ## Setup
 
@@ -76,18 +81,25 @@ Free Render storage is temporary. With `DATABASE_PATH=/tmp/cricket_verse.sqlite3
 
 ## Commands
 
+- `/start` - bot health and ping.
+- `/help` - public command list.
 - `/playmatch 5 2` - start a 5-over match with 2 powerplay overs.
+- `/pvp 5 2` - start a 1v1 match with 2 powerplay overs.
 - `/myteam` - captain team controls.
 - `/add <telegram_id> <name>` - captain-only quick add; also works when replying to or tagging a Telegram user.
 - `/howplayed 123456789` - Gemini/stat summary for a Telegram user id.
 - `/ask who is winning?` - live match analysis only.
 - `/buzz top runs` or `/buzz most wickets` - database-backed history and player stats.
 - `/matchin 12` - saved match details for match id 12.
-- `/logs 10` - admin-only last 10 batter/bowler button presses.
+- `/logs 10` - owner-only last 10 batter/bowler button presses.
+- `/spam 5 hello` - owner-only spam text; reply to a message with `/spam 5` to repeat that message.
 - `/exp` - explain the last live ball result.
+- `/guide` - simple button guide.
 - `/myprofile` - your stats and puzzle game record.
 - `/games` or `/puzzle` - button puzzle arena.
-- `/2048` - start a button-based 2048 board directly.
+- `/casino 100` - open virtual-credit casino buttons.
+- `/bet heads 100` or `/bet tails 100` - coin bet.
+- `/dice 100` or `/roll 100` - dice multiplier game.
 - `/cancelmatch` - end the active match in the chat.
 
 ## Ball Flow
@@ -101,9 +113,10 @@ Free Render storage is temporary. With `DATABASE_PATH=/tmp/cricket_verse.sqlite3
 7. Bouncers count toward the hard-ball cap.
 8. The batter can guess Bouncer length once per over, even if the bowler did not press Bouncer.
 9. No-balls create a free hit for the next legal ball.
-10. Wides do not count as legal balls, so the delivery is rebowled.
-11. Powerplay has reduced catch-out chance.
-12. LBW and Stumped wickets offer DRS to the batting captain when reviews remain.
+10. No-ball batting runs use MRL logic.
+11. Wides do not count as legal balls, so the delivery is rebowled.
+12. Powerplay has reduced catch-out chance.
+13. LBW and Stumped wickets offer DRS to the batting captain when reviews remain.
 
 ## AI Behavior
 
@@ -116,8 +129,15 @@ Free Render storage is temporary. With `DATABASE_PATH=/tmp/cricket_verse.sqlite3
 
 - Old stake-style virtual-credit games are removed from the command surface.
 - Puzzle games use Telegram buttons only.
-- 2048 is available from `/games` and directly with `/2048`.
+- 2048 is available from `/games`.
+- Minefield and Memory Match are also available from `/games`.
 - Puzzle wins and losses appear in `/myprofile`.
+
+## Credits
+
+- Credits are only in-bot points, never real money.
+- Owner id `6262064767` can add credits with `/add <tg_id> <amount>` or by replying `/add <amount>`.
+- Dice multipliers: 1=x0.5, 2=x0.75, 3=x1, 4=x1.5, 5=x2, 6=x2.5.
 
 ## Notes
 
