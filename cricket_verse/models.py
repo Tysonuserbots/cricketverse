@@ -55,6 +55,7 @@ def new_player_stats(name: str, team_key: str) -> dict[str, Any]:
 class Match:
     chat_id: int
     overs: int
+    powerplay_overs: int = 0
     phase: str = "joining"
     main_message_id: int | None = None
     innings: int = 1
@@ -78,12 +79,14 @@ class Match:
     pending_drs: dict[str, Any] | None = None
     drs_reviews: dict[str, int] = field(default_factory=lambda: {"A": 2, "B": 2})
     player_of_match: dict[str, Any] | None = None
+    captain_change_counts: dict[str, int] = field(default_factory=dict)
     target: int | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "chat_id": self.chat_id,
             "overs": self.overs,
+            "powerplay_overs": self.powerplay_overs,
             "phase": self.phase,
             "main_message_id": self.main_message_id,
             "innings": self.innings,
@@ -107,6 +110,7 @@ class Match:
             "pending_drs": self.pending_drs,
             "drs_reviews": self.drs_reviews,
             "player_of_match": self.player_of_match,
+            "captain_change_counts": self.captain_change_counts,
             "target": self.target,
         }
 
@@ -115,9 +119,9 @@ class Match:
         return cls(**data)
 
 
-def make_match(chat_id: int, overs: int, captain_id: int, captain_name: str) -> Match:
+def make_match(chat_id: int, overs: int, captain_id: int, captain_name: str, powerplay_overs: int = 0) -> Match:
     cap = {"id": int(captain_id), "name": captain_name}
-    match = Match(chat_id=chat_id, overs=overs)
+    match = Match(chat_id=chat_id, overs=overs, powerplay_overs=int(powerplay_overs))
     match.captains = {"A": cap}
     match.teams = {
         "A": {
@@ -149,6 +153,7 @@ def reset_score(match: Match) -> None:
         "bouncers": 0,
         "hard_slots": 0,
         "batter_bouncers": 0,
+        "free_hit": False,
     }
     match.current_batter_id = None
     match.current_bowler_id = None

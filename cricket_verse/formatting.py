@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from .engine import current_run_rate, overs_text, required_run_rate, team_name
+from .engine import current_run_rate, in_powerplay, overs_text, required_run_rate, team_name
 from .models import Match
 
 
@@ -58,13 +58,15 @@ def scoreboard(match: Match) -> str:
     target_line = ""
     if match.target:
         target_line = f"\n🎯 Target: {match.target} in {match.overs * 6} balls"
+    pp_line = f"\nPP: {match.powerplay_overs} over(s)" if in_powerplay(match) else ""
+    free_hit_line = "\nFREE HIT ACTIVE" if match.over_state.get("free_hit") else ""
     innings_banner = f"╔━━━━━━━╗\n➠ INNINGS -{match.innings}\n╚━━━━━━━╝\n" if match.innings == 2 else ""
     return (
         f"{innings_banner}"
         f"༺━━━━━━━━━━━━━━━━━༻\n"
         f"🏏 {batting} {score['runs']} / {score['wickets']}\n"
         f"🥎 {bowling} - {overs_text(score['legal_balls'])}/{match.overs}"
-        f"{target_line}\n"
+        f"{target_line}{pp_line}{free_hit_line}\n"
         f"⚔══════════════════⚔\n"
         f"⏱ {overs_text(score['legal_balls'])} OVER • LIVE\n"
         f"╭━━━━━━━━━━━━╮\n"
@@ -110,9 +112,11 @@ def team_roster_text(match: Match, team_key: str) -> str:
     team = match.teams[team_key]
     cap_id = team.get("captain_id")
     role = "Batting" if team_key == match.batting_team else "Bowling" if team_key == match.bowling_team else "Waiting"
+    changes_left = max(0, 2 - int(match.captain_change_counts.get(str(cap_id), 0))) if cap_id else 0
     lines = [
         f"{team_name(match, team_key)}",
         f"Role: {role}",
+        f"Mid-match changes left: {changes_left}",
         "",
         "Your team:",
     ]
@@ -163,6 +167,7 @@ def match_summary(match: Match, result: str) -> dict[str, Any]:
     return {
         "result": result,
         "overs": match.overs,
+        "powerplay_overs": match.powerplay_overs,
         "teams": {
             key: {
                 "name": team_name(match, key),
@@ -229,9 +234,7 @@ def profile_text(profile: dict[str, Any]) -> str:
     sr = runs * 100 / balls if balls else 0.0
     return (
         f"{profile.get('display_name', profile.get('tg_id'))}\n"
-        f"Virtual credits: {profile.get('credits', 0)}\n"
         f"Matches: {profile.get('matches', 0)} | Runs: {runs} | SR: {sr:.2f}\n"
         f"Wickets: {profile.get('wickets', 0)} | Catches: {profile.get('catches', 0)} | POTM: {profile.get('player_of_match', 0)}\n"
-        f"Fun games: {profile.get('games_won', 0)}W/{profile.get('games_lost', 0)}L from {profile.get('games_played', 0)}\n"
-        "Credits are virtual only: no real money, no deposit, no withdrawal."
+        f"Puzzle games: {profile.get('games_won', 0)}W/{profile.get('games_lost', 0)}L from {profile.get('games_played', 0)}"
     )

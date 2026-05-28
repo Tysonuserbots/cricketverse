@@ -108,6 +108,15 @@ def legal_over_complete(match: Match) -> bool:
     return int(match.score["legal_balls"]) > 0 and int(match.score["legal_balls"]) % 6 == 0
 
 
+def in_powerplay(match: Match) -> bool:
+    pp_overs = int(getattr(match, "powerplay_overs", 0) or 0)
+    return pp_overs > 0 and int(match.score.get("legal_balls", 0)) < pp_overs * 6
+
+
+def hard_ball_limit(match: Match) -> int:
+    return 2 if in_powerplay(match) else 4
+
+
 def choose_length(style: str, code: int) -> str:
     delivery = DELIVERIES_BY_STYLE[style][code]
     return random.choice(delivery.lengths)
@@ -171,7 +180,7 @@ def register_delivery_use(match: Match, style: str, code: int) -> None:
 
 def hard_ball_forces_miss_logic(match: Match, style: str, code: int) -> bool:
     delivery = DELIVERIES_BY_STYLE[style][code]
-    return (delivery.hard or delivery.bouncer) and int(match.over_state["hard_slots"]) <= 3
+    return (delivery.hard or delivery.bouncer) and int(match.over_state["hard_slots"]) <= hard_ball_limit(match)
 
 
 def score_runs_for_ball(match: Match, style: str, code: int, length: str, batter_run: int, ok: bool) -> int:
@@ -180,7 +189,7 @@ def score_runs_for_ball(match: Match, style: str, code: int, length: str, batter
     if hard_ball_forces_miss_logic(match, style, code):
         return miss_runs(style, code, length, batter_run)
     delivery = DELIVERIES_BY_STYLE[style][code]
-    if delivery.hard and int(match.over_state["hard_slots"]) > 3:
+    if delivery.hard and int(match.over_state["hard_slots"]) > hard_ball_limit(match):
         return int(batter_run)
     return miss_runs(style, code, length, batter_run)
 
@@ -188,6 +197,8 @@ def score_runs_for_ball(match: Match, style: str, code: int, length: str, batter
 def wicket_check(match: Match, style: str, code: int, length_ok: bool, batter_run: int) -> dict[str, Any]:
     delivery = DELIVERIES_BY_STYLE[style][code]
     bfr_equals_br = int(code) == int(batter_run)
+    catch_type_1_limit = 65 if in_powerplay(match) else 80
+    catch_type_2_pct = 15 if in_powerplay(match) else 30
     if bfr_equals_br:
         roll = random.randint(1, 100)
         if length_ok:
@@ -196,11 +207,11 @@ def wicket_check(match: Match, style: str, code: int, length_ok: bool, batter_ru
             return {"kind": "none"}
         if roll <= 50:
             return {"kind": "direct", "wicket_type": random.choice(HARD_WICKET_TYPES)}
-        if roll <= 80:
+        if roll <= catch_type_1_limit:
             return {"kind": "catch", "catch_type": 1}
         return {"kind": "run_out"}
 
-    if not length_ok and delivery.catch_ball and random.randint(1, 100) <= 30:
+    if not length_ok and delivery.catch_ball and random.randint(1, 100) <= catch_type_2_pct:
         return {"kind": "catch", "catch_type": 2}
     return {"kind": "none"}
 
@@ -329,6 +340,7 @@ def resolve_pending_delivery(match: Match) -> dict[str, Any]:
     length_ok = bool(data["length_ok"])
     batter_run = int(data["batter_run"])
     extra = data["extra"]
+    free_hit = bool(match.over_state.get("free_hit", False))
 
     match.score["last_delivery"] = f"{delivery_name} Length {length} (bat: {batter_length})"
     match.score["last_length_ok"] = length_ok
@@ -363,6 +375,7 @@ def resolve_pending_delivery(match: Match) -> dict[str, Any]:
             batter_ball=True,
             bowler_charged_runs=0,
         )
+        match.over_state["free_hit"] = False
         match.pending_delivery = None
         return {
             "status": "extra",
@@ -387,6 +400,7 @@ def resolve_pending_delivery(match: Match) -> dict[str, Any]:
             batter_ball=False,
             bowler_charged_runs=total,
         )
+        match.over_state["free_hit"] = True
         match.pending_delivery = None
         return {
             "status": "extra",
@@ -396,6 +410,21 @@ def resolve_pending_delivery(match: Match) -> dict[str, Any]:
             "delivery": delivery_name,
             "length": length,
             "batter_length": batter_length,
+            "free_hit_next": True,
+        }
+
+    if free_hit:
+        apply_ball(match, bat_runs=bat_runs, legal=True, timeline_token=f"{bat_runs}FH")
+        match.over_state["free_hit"] = False
+        match.pending_delivery = None
+        return {
+            "status": "runs",
+            "runs": bat_runs,
+            "delivery": delivery_name,
+            "length": length,
+            "batter_length": batter_length,
+            "length_ok": length_ok,
+            "free_hit": True,
         }
 
     wicket = wicket_check(match, style, code, length_ok, batter_run)
