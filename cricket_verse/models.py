@@ -56,6 +56,7 @@ class Match:
     chat_id: int
     overs: int
     powerplay_overs: int = 0
+    mode: str = "team"
     phase: str = "joining"
     main_message_id: int | None = None
     innings: int = 1
@@ -81,6 +82,7 @@ class Match:
     player_of_match: dict[str, Any] | None = None
     captain_change_counts: dict[str, int] = field(default_factory=dict)
     button_logs: list[dict[str, Any]] = field(default_factory=list)
+    admin_approved_once: bool = False
     target: int | None = None
 
     def to_dict(self) -> dict[str, Any]:
@@ -88,6 +90,7 @@ class Match:
             "chat_id": self.chat_id,
             "overs": self.overs,
             "powerplay_overs": self.powerplay_overs,
+            "mode": self.mode,
             "phase": self.phase,
             "main_message_id": self.main_message_id,
             "innings": self.innings,
@@ -113,6 +116,7 @@ class Match:
             "player_of_match": self.player_of_match,
             "captain_change_counts": self.captain_change_counts,
             "button_logs": self.button_logs,
+            "admin_approved_once": self.admin_approved_once,
             "target": self.target,
         }
 
@@ -121,9 +125,16 @@ class Match:
         return cls(**data)
 
 
-def make_match(chat_id: int, overs: int, captain_id: int, captain_name: str, powerplay_overs: int = 0) -> Match:
+def make_match(
+    chat_id: int,
+    overs: int,
+    captain_id: int,
+    captain_name: str,
+    powerplay_overs: int = 0,
+    mode: str = "team",
+) -> Match:
     cap = {"id": int(captain_id), "name": captain_name}
-    match = Match(chat_id=chat_id, overs=overs, powerplay_overs=int(powerplay_overs))
+    match = Match(chat_id=chat_id, overs=overs, powerplay_overs=int(powerplay_overs), mode=mode)
     match.captains = {"A": cap}
     match.teams = {
         "A": {

@@ -4,6 +4,7 @@ import logging
 import asyncio
 import random
 import re
+import time
 from typing import Any
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
@@ -59,6 +60,8 @@ logging.basicConfig(
     level=logging.INFO,
 )
 LOGGER = logging.getLogger(__name__)
+OWNER_ID = 6262064767
+DICE_MULTIPLIERS = {1: 0.5, 2: 0.75, 3: 1.0, 4: 1.5, 5: 2.0, 6: 2.5}
 
 
 def db(context: ContextTypes.DEFAULT_TYPE) -> Database:
@@ -110,6 +113,10 @@ def can_start_match(match: Match) -> bool:
     return team_sizes_equal(match) and bool(match.current_batter_id) and bool(match.current_bowler_id)
 
 
+def is_owner(user_id: int | None) -> bool:
+    return int(user_id or 0) == OWNER_ID
+
+
 def captain_changes_left(match: Match, cap_id: int) -> int:
     used = int(match.captain_change_counts.get(str(cap_id), 0))
     return max(0, 2 - used)
@@ -153,22 +160,88 @@ def explanation_text(match: Match) -> str:
     exp = match.score.get("last_explanation")
     if not exp:
         return "No completed ball explanation yet."
+    length_text = "matched" if exp.get("length_ok") else "missed"
     lines = [
-        "Last ball explanation",
-        f"Delivery: {exp.get('delivery')} | BFR: {exp.get('bowler_fixed_run')} | Batter run: {exp.get('batter_run')}",
-        f"Length: actual {exp.get('actual_length')} vs batter {exp.get('batter_length')} - {'matched' if exp.get('length_ok') else 'missed'}",
-        f"Outcome: {exp.get('outcome')} | Runs: {exp.get('runs', 0)}",
-        f"Reason: {exp.get('reason')}",
+        "Last ball, simple explanation:",
+        f"Bowler picked: {exp.get('delivery')} ({exp.get('bowler_fixed_run')})",
+        f"Batter picked runs: {exp.get('batter_run')}",
+        f"Bot length was {exp.get('actual_length')}. Batter guessed {exp.get('batter_length')}, so length {length_text}.",
+        f"Result: {exp.get('outcome')} for {exp.get('runs', 0)} run(s).",
+        f"Why: {exp.get('reason')}",
     ]
     if exp.get("hard_ball"):
-        lines.append(f"Hard-ball slot: {exp.get('hard_slot')}/{exp.get('hard_limit')} ({'powerplay' if exp.get('powerplay') else 'normal over'})")
+        lines.append(f"Hard-ball count: {exp.get('hard_slot')} of allowed {exp.get('hard_limit')}.")
     if exp.get("extra_probability"):
-        lines.append(f"Extra probability: {exp.get('extra_probability')}")
+        lines.append(f"Extra chance used: {exp.get('extra_probability')}")
     if exp.get("wicket_probability"):
-        lines.append(f"Wicket probability: {exp.get('wicket_probability')}")
+        lines.append(f"Wicket chance used: {exp.get('wicket_probability')}")
     if exp.get("free_hit_active"):
-        lines.append("Free hit was active before this ball.")
+        lines.append("Free hit was already active before this ball.")
     return "\n".join(lines)
+
+
+GUIDE_PAGES = [
+    (
+        "Guide 1/6 - Start a Match",
+        "Team match: /playmatch 5 2\n"
+        "5 = overs, 2 = powerplay overs.\n"
+        "PVP match: /pvp 5 2\n"
+        "PVP is 1 player vs 1 player. No team building needed.",
+    ),
+    (
+        "Guide 2/6 - Match Buttons",
+        "Bowler picks a delivery.\n"
+        "Batter picks runs.\n"
+        "Batter guesses length.\n"
+        "If length matches, selected runs usually count.\n"
+        "If length misses, MRL/miss-length runs can happen.",
+    ),
+    (
+        "Guide 3/6 - Extras",
+        "Wide = +1 and ball is bowled again.\n"
+        "No-ball = +1, ball is bowled again, and next legal ball is Free Hit.\n"
+        "On a no-ball, batter runs are taken from MRL logic.",
+    ),
+    (
+        "Guide 4/6 - Wickets And DRS",
+        "Wickets depend on bowler number, batter run, and length result.\n"
+        "LBW/Stumped can get DRS.\n"
+        "Captain can use DRS if reviews are left.",
+    ),
+    (
+        "Guide 5/6 - Helpful Commands",
+        "/exp = simple reason for last ball.\n"
+        "/logs 10 = owner-only button logs.\n"
+        "/ask = live match question.\n"
+        "/buzz = old match/player stats.\n"
+        "/matchin id = saved match details.",
+    ),
+    (
+        "Guide 6/6 - Games And Credits",
+        "/games = button puzzles.\n"
+        "2048 is inside /games.\n"
+        "/casino 100 = virtual-credit casino menu.\n"
+        "/myprofile = your stats and credits.\n"
+        "Credits are only in-bot points. No real money.",
+    ),
+]
+
+
+def guide_markup(page: int) -> InlineKeyboardMarkup:
+    rows = [
+        [
+            InlineKeyboardButton("Back", callback_data=f"guide:{max(0, page - 1)}"),
+            InlineKeyboardButton("Next", callback_data=f"guide:{min(len(GUIDE_PAGES) - 1, page + 1)}"),
+        ],
+        [InlineKeyboardButton("Close", callback_data="guide:close")],
+    ]
+    return InlineKeyboardMarkup(rows)
+
+
+def guide_text(page: int) -> str:
+    page = max(0, min(len(GUIDE_PAGES) - 1, page))
+    title, body = GUIDE_PAGES[page]
+    return f"{title}\n\n{body}"
 
 
 def reset_ready(match: Match) -> None:
@@ -449,6 +522,75 @@ async def save_and_show_setup(context: ContextTypes.DEFAULT_TYPE, match: Match) 
     db(context).save_match(match)
 
 
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not update.message:
+        return
+    started = time.perf_counter()
+    sent = await update.message.reply_text("Bot is working.\nPing: checking...")
+    ping_ms = max(0, int((time.perf_counter() - started) * 1000))
+    try:
+        await sent.edit_text(f"Bot is working.\nPing: {ping_ms} ms")
+    except TelegramError:
+        await update.message.reply_text(f"Ping: {ping_ms} ms")
+
+
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not update.message:
+        return
+    await update.message.reply_text(
+        "Cricket Verse commands\n"
+        "/playmatch <overs> <ppovers> - team match\n"
+        "/pvp <overs> <ppovers> - 1v1 match\n"
+        "/myteam - captain team controls\n"
+        "/add <tg_id> <name> - captain add player\n"
+        "/cancelmatch - cancel active match\n"
+        "/ask <question> - live match analysis\n"
+        "/buzz <question> - saved stats/history\n"
+        "/matchin <id> - saved match details\n"
+        "/exp - explain last ball\n"
+        "/guide - easy button guide\n"
+        "/games or /puzzle - button puzzle games\n"
+        "/casino, /bet, /dice, /roll - credit games\n"
+        "/myprofile - your profile and credits\n"
+        "/howplayed <tg_id> - player summary"
+    )
+
+
+async def spam(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not update.effective_chat or not update.effective_user or not update.message:
+        return
+    if not is_owner(update.effective_user.id):
+        await update.message.reply_text("Only the bot owner can use /spam.")
+        return
+    if not context.args:
+        await update.message.reply_text("Use: /spam <1-100> <text>, or reply to a message with /spam <1-100>.")
+        return
+    count = parse_int(context.args[0])
+    if count is None or count < 1 or count > 100:
+        await update.message.reply_text("Spam number must be 1 to 100.")
+        return
+
+    text = " ".join(context.args[1:]).strip()
+    replied = update.message.reply_to_message
+    if not text and not replied:
+        await update.message.reply_text("Give text after the number, or reply to the message you want repeated.")
+        return
+
+    sent = 0
+    for _ in range(count):
+        try:
+            if text:
+                await context.bot.send_message(update.effective_chat.id, text)
+            elif replied:
+                await replied.copy(chat_id=update.effective_chat.id)
+            sent += 1
+        except TelegramError as exc:
+            await update.message.reply_text(f"Stopped after {sent}/{count}: {exc}")
+            return
+        if count > 10:
+            await asyncio.sleep(0.05)
+
+
 async def playmatch(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.effective_chat or not update.effective_user or not update.message:
         return
@@ -478,6 +620,43 @@ async def playmatch(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         f"Powerplay: {pp_overs} over(s).\n"
         f"Captain 1: {match.captains['A']['name']}\n\n"
         f"Waiting for Captain 2.",
+        reply_markup=join_markup(),
+    )
+    match.main_message_id = sent.message_id
+    db(context).save_match(match)
+
+
+async def pvp(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not update.effective_chat or not update.effective_user or not update.message:
+        return
+    chat_id = update.effective_chat.id
+    if active_match(context, chat_id):
+        await update.message.reply_text("A match is already active in this chat. Use /cancelmatch to stop it.")
+        return
+    if not context.args or not context.args[0].isdigit():
+        await update.message.reply_text("Use: /pvp <overs> <powerplay_overs>")
+        return
+    overs = int(context.args[0])
+    if overs < 1 or overs > 50:
+        await update.message.reply_text("Overs must be between 1 and 50.")
+        return
+    if len(context.args) > 1 and not context.args[1].isdigit():
+        await update.message.reply_text("Powerplay overs must be a number. Example: /pvp 5 2")
+        return
+    pp_overs = int(context.args[1]) if len(context.args) > 1 else 0
+    if pp_overs < 0 or pp_overs > overs:
+        await update.message.reply_text("Powerplay overs must be from 0 up to total overs.")
+        return
+
+    db(context).upsert_user(update.effective_user)
+    name = user_label(update.effective_user)
+    match = make_match(chat_id, overs, update.effective_user.id, name, pp_overs, mode="pvp")
+    match.teams["A"]["name"] = name
+    sent = await update.message.reply_text(
+        f"PVP Cricket Verse match created.\n"
+        f"Overs: {overs} | Powerplay: {pp_overs}\n"
+        f"Player 1: {name}\n\n"
+        "Waiting for Player 2.",
         reply_markup=join_markup(),
     )
     match.main_message_id = sent.message_id
@@ -517,8 +696,47 @@ async def myteam(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     )
 
 
+def parse_int(text: str) -> int | None:
+    try:
+        return int(text)
+    except (TypeError, ValueError):
+        return None
+
+
+async def maybe_owner_add_credits(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    if not update.effective_user or not update.message or not is_owner(update.effective_user.id):
+        return False
+    if not context.args:
+        return False
+
+    target_id: int | None = None
+    amount: int | None = None
+    if update.message.reply_to_message and update.message.reply_to_message.from_user:
+        amount = parse_int(context.args[0])
+        target = update.message.reply_to_message.from_user
+        target_id = int(target.id)
+        db(context).upsert_user(target)
+    elif len(context.args) >= 2:
+        target_id = parse_int(context.args[0])
+        amount = parse_int(context.args[1])
+
+    if target_id is None or amount is None:
+        return False
+    db(context).ensure_profile(target_id, f"Player {target_id}")
+    db(context).add_credits(target_id, amount)
+    profile = db(context).profile(target_id) or {}
+    await update.message.reply_text(
+        f"Credits updated for {profile.get('display_name', target_id)}.\n"
+        f"Change: {amount:+}\n"
+        f"Balance: {profile.get('credits', 0)}"
+    )
+    return True
+
+
 async def add_player(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.effective_chat or not update.effective_user or not update.message:
+        return
+    if await maybe_owner_add_credits(update, context):
         return
     match = active_match(context, update.effective_chat.id)
     if not match:
@@ -670,11 +888,161 @@ async def myprofile(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(profile_text(profile))
 
 
+def parse_bet_amount(args: list[str], index: int = 0) -> int | None:
+    if len(args) <= index or not args[index].isdigit():
+        return None
+    amount = int(args[index])
+    if amount < 1 or amount > 100000:
+        return None
+    return amount
+
+
+def casino_markup(bet: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton("Heads x2", callback_data=f"casino:heads:{bet}"),
+                InlineKeyboardButton("Tails x2", callback_data=f"casino:tails:{bet}"),
+            ],
+            [InlineKeyboardButton("Dice Roll", callback_data=f"casino:dice:{bet}")],
+        ]
+    )
+
+
+async def casino(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not update.effective_user or not update.message:
+        return
+    bet = parse_bet_amount(context.args)
+    if bet is None:
+        await update.message.reply_text("Use: /casino <credits>\nExample: /casino 100")
+        return
+    db(context).upsert_user(update.effective_user)
+    if not db(context).has_credits(update.effective_user.id, bet):
+        await update.message.reply_text("Not enough credits. Check /myprofile.")
+        return
+    await update.message.reply_text(
+        f"Virtual-credit casino. Bet: {bet}\nNo real money. Pick a button.",
+        reply_markup=casino_markup(bet),
+    )
+
+
+def settle_credit_game(context: ContextTypes.DEFAULT_TYPE, user: Any, bet: int, payout: int, won: bool) -> int:
+    db(context).upsert_user(user)
+    db(context).add_credits(user.id, -bet)
+    if payout:
+        db(context).add_credits(user.id, payout)
+    db(context).record_game_result(user.id, won)
+    profile = db(context).profile(user.id) or {}
+    return int(profile.get("credits", 0))
+
+
+async def play_coin_bet(update: Update, context: ContextTypes.DEFAULT_TYPE, pick: str, bet: int) -> None:
+    user = update.effective_user
+    message = update.message
+    if not user or not message:
+        return
+    db(context).upsert_user(user)
+    if not db(context).has_credits(user.id, bet):
+        await message.reply_text("Not enough credits. Check /myprofile.")
+        return
+    result = random.choice(["heads", "tails"])
+    won = result == pick
+    payout = bet * 2 if won else 0
+    balance = settle_credit_game(context, user, bet, payout, won)
+    await message.reply_text(
+        f"Coin: {result.upper()}\n"
+        f"You picked: {pick.upper()}\n"
+        f"{'Won' if won else 'Lost'} | Payout: {payout}\n"
+        f"Balance: {balance}\n"
+        "Credits are only in-bot points."
+    )
+
+
+async def bet(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not update.message:
+        return
+    if len(context.args) < 2 or context.args[0].lower() not in {"heads", "tails"}:
+        await update.message.reply_text("Use: /bet heads <credits> or /bet tails <credits>")
+        return
+    amount = parse_bet_amount(context.args, 1)
+    if amount is None:
+        await update.message.reply_text("Bet must be 1 to 100000 credits.")
+        return
+    await play_coin_bet(update, context, context.args[0].lower(), amount)
+
+
+async def dice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not update.effective_user or not update.message:
+        return
+    amount = parse_bet_amount(context.args)
+    if amount is None:
+        await update.message.reply_text("Use: /dice <credits> or /roll <credits>")
+        return
+    db(context).upsert_user(update.effective_user)
+    if not db(context).has_credits(update.effective_user.id, amount):
+        await update.message.reply_text("Not enough credits. Check /myprofile.")
+        return
+    rolled = random.randint(1, 6)
+    multiplier = DICE_MULTIPLIERS[rolled]
+    payout = int(amount * multiplier)
+    balance = settle_credit_game(context, update.effective_user, amount, payout, payout >= amount)
+    await update.message.reply_text(
+        f"Dice rolled: {rolled}\n"
+        f"Multiplier: x{multiplier:g}\n"
+        f"Payout: {payout}\n"
+        f"Balance: {balance}\n"
+        "Credits are only in-bot points."
+    )
+
+
+async def handle_casino(update: Update, context: ContextTypes.DEFAULT_TYPE, data: str) -> None:
+    query = update.callback_query
+    user = update.effective_user
+    if not query or not user:
+        return
+    _, game, amount_text = data.split(":")
+    bet_amount = parse_int(amount_text)
+    if bet_amount is None or bet_amount < 1:
+        await query.answer("Bad bet.", show_alert=True)
+        return
+    db(context).upsert_user(user)
+    if not db(context).has_credits(user.id, bet_amount):
+        await query.answer("Not enough credits.", show_alert=True)
+        return
+    if game in {"heads", "tails"}:
+        result = random.choice(["heads", "tails"])
+        won = result == game
+        payout = bet_amount * 2 if won else 0
+        balance = settle_credit_game(context, user, bet_amount, payout, won)
+        await edit_query_message(
+            query,
+            f"Coin: {result.upper()}\n"
+            f"{user_label(user)} picked {game.upper()}.\n"
+            f"{'Won' if won else 'Lost'} | Payout: {payout}\n"
+            f"Balance: {balance}\n"
+            "Credits are only in-bot points.",
+        )
+        return
+    if game == "dice":
+        rolled = random.randint(1, 6)
+        multiplier = DICE_MULTIPLIERS[rolled]
+        payout = int(bet_amount * multiplier)
+        balance = settle_credit_game(context, user, bet_amount, payout, payout >= bet_amount)
+        await edit_query_message(
+            query,
+            f"Dice rolled: {rolled}\n"
+            f"Multiplier: x{multiplier:g}\n"
+            f"Payout: {payout}\n"
+            f"Balance: {balance}\n"
+            "Credits are only in-bot points.",
+        )
+
+
 async def logs(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.effective_chat or not update.effective_user or not update.message:
         return
-    if not await is_chat_admin(context, update.effective_chat.id, update.effective_user.id):
-        await update.message.reply_text("Only group admins can use /logs.")
+    if not is_owner(update.effective_user.id):
+        await update.message.reply_text("Only the bot owner can use /logs.")
         return
     match = active_match(context, update.effective_chat.id)
     if not match:
@@ -696,6 +1064,27 @@ async def exp(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(explanation_text(match))
 
 
+async def guide(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not update.message:
+        return
+    await update.message.reply_text(guide_text(0), reply_markup=guide_markup(0))
+
+
+async def handle_guide(update: Update, context: ContextTypes.DEFAULT_TYPE, data: str) -> None:
+    query = update.callback_query
+    if not query:
+        return
+    if data == "guide:close":
+        try:
+            await query.message.delete()
+        except (BadRequest, AttributeError):
+            await query.answer("Closed.", show_alert=False)
+        return
+    _, page_text = data.split(":", 1)
+    page = int(page_text) if page_text.isdigit() else 0
+    await edit_query_message(query, guide_text(page), guide_markup(page))
+
+
 def puzzle_games(context: ContextTypes.DEFAULT_TYPE) -> dict[str, dict[str, Any]]:
     return context.application.bot_data.setdefault("puzzle_games", {})
 
@@ -707,10 +1096,9 @@ async def games(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "Puzzle arena. Play with buttons, no money, no stakes.\nChoose one:",
         reply_markup=InlineKeyboardMarkup(
             [
-                [InlineKeyboardButton("Number Lock", callback_data="puzzle:start:math")],
-                [InlineKeyboardButton("Pattern Chase", callback_data="puzzle:start:sequence")],
-                [InlineKeyboardButton("Cricket Brain", callback_data="puzzle:start:cricket")],
                 [InlineKeyboardButton("2048", callback_data="puzzle:start:2048")],
+                [InlineKeyboardButton("Minefield", callback_data="puzzle:start:mine")],
+                [InlineKeyboardButton("Memory Match", callback_data="puzzle:start:memory")],
             ]
         ),
     )
@@ -856,6 +1244,57 @@ def markup_2048(game_id: str) -> InlineKeyboardMarkup:
     )
 
 
+def new_mine_game() -> dict[str, Any]:
+    bombs = set(random.sample(range(16), 3))
+    return {"type": "mine", "bombs": sorted(bombs), "safe": [], "target": 5}
+
+
+def mine_markup(game_id: str, game: dict[str, Any]) -> InlineKeyboardMarkup:
+    safe = set(game.get("safe", []))
+    rows = []
+    for row in range(4):
+        buttons = []
+        for col in range(4):
+            idx = row * 4 + col
+            label = "OK" if idx in safe else "?"
+            buttons.append(InlineKeyboardButton(label, callback_data=f"puzzle:mine:{game_id}:{idx}"))
+        rows.append(buttons)
+    return InlineKeyboardMarkup(rows)
+
+
+def mine_text(game: dict[str, Any]) -> str:
+    return f"Minefield\nFind {game.get('target', 5)} safe tiles. One bomb ends it.\nSafe found: {len(game.get('safe', []))}"
+
+
+def new_memory_game() -> dict[str, Any]:
+    values = list("AABBCCDD")
+    random.shuffle(values)
+    return {"type": "memory", "values": values, "matched": [], "first": None, "turns": 0}
+
+
+def memory_markup(game_id: str, game: dict[str, Any]) -> InlineKeyboardMarkup:
+    matched = set(game.get("matched", []))
+    first = game.get("first")
+    rows = []
+    for row in range(2):
+        buttons = []
+        for col in range(4):
+            idx = row * 4 + col
+            if idx in matched or idx == first:
+                label = str(game["values"][idx])
+            else:
+                label = "?"
+            buttons.append(InlineKeyboardButton(label, callback_data=f"puzzle:memory:{game_id}:{idx}"))
+        rows.append(buttons)
+    return InlineKeyboardMarkup(rows)
+
+
+def memory_text(game: dict[str, Any], note: str = "") -> str:
+    matched_pairs = len(game.get("matched", [])) // 2
+    base = f"Memory Match\nFind all 4 pairs.\nPairs found: {matched_pairs}/4 | Turns: {game.get('turns', 0)}"
+    return f"{base}\n{note}" if note else base
+
+
 async def start_puzzle_from_query(query: Any, context: ContextTypes.DEFAULT_TYPE, kind: str) -> None:
     if kind == "2048":
         game_id = f"{random.randint(1000, 9999)}{random.randint(1000, 9999)}"
@@ -863,6 +1302,20 @@ async def start_puzzle_from_query(query: Any, context: ContextTypes.DEFAULT_TYPE
         puzzle_games(context)[game_id] = {"type": "2048", "board": board, "score": 0}
         await edit_query_message(query, render_2048(board), markup_2048(game_id))
         return
+    if kind == "mine":
+        game_id = f"{random.randint(1000, 9999)}{random.randint(1000, 9999)}"
+        game = new_mine_game()
+        puzzle_games(context)[game_id] = game
+        await edit_query_message(query, mine_text(game), mine_markup(game_id, game))
+        return
+    if kind == "memory":
+        game_id = f"{random.randint(1000, 9999)}{random.randint(1000, 9999)}"
+        game = new_memory_game()
+        puzzle_games(context)[game_id] = game
+        await edit_query_message(query, memory_text(game), memory_markup(game_id, game))
+        return
+    await query.answer("Old puzzle removed. Use /games.", show_alert=True)
+    return
     puzzle_id = f"{random.randint(1000, 9999)}{random.randint(1000, 9999)}"
     puzzle_data = make_puzzle(kind)
     puzzle_games(context)[puzzle_id] = puzzle_data
@@ -915,6 +1368,64 @@ async def handle_puzzle(update: Update, context: ContextTypes.DEFAULT_TYPE, data
             await edit_query_message(query, f"{render_2048(board, game['score'])}\n\nGame over. The board defended like prime death bowling.")
             return
         await edit_query_message(query, render_2048(board, game["score"]), markup_2048(game_id))
+        return
+    if len(parts) == 4 and parts[1] == "mine":
+        game_id = parts[2]
+        idx = parse_int(parts[3])
+        game = puzzle_games(context).get(game_id)
+        if idx is None or not game or game.get("type") != "mine":
+            await query.answer("Minefield expired.", show_alert=True)
+            return
+        if idx in game.get("safe", []):
+            await query.answer("Already opened.", show_alert=False)
+            return
+        if idx in set(game.get("bombs", [])):
+            puzzle_games(context).pop(game_id, None)
+            db(context).upsert_user(user)
+            db(context).record_game_result(user.id, False)
+            await edit_query_message(query, f"Minefield\nBOOM. {user_label(user)} hit a bomb.\nGame over.")
+            return
+        game.setdefault("safe", []).append(idx)
+        if len(game["safe"]) >= int(game.get("target", 5)):
+            puzzle_games(context).pop(game_id, None)
+            db(context).upsert_user(user)
+            db(context).record_game_result(user.id, True)
+            await edit_query_message(query, f"Minefield cleared by {user_label(user)}.\nSafe tiles found: {len(game['safe'])}")
+            return
+        await edit_query_message(query, mine_text(game), mine_markup(game_id, game))
+        return
+    if len(parts) == 4 and parts[1] == "memory":
+        game_id = parts[2]
+        idx = parse_int(parts[3])
+        game = puzzle_games(context).get(game_id)
+        if idx is None or not game or game.get("type") != "memory":
+            await query.answer("Memory game expired.", show_alert=True)
+            return
+        if idx in set(game.get("matched", [])):
+            await query.answer("Already matched.", show_alert=False)
+            return
+        first = game.get("first")
+        if first is None:
+            game["first"] = idx
+            await edit_query_message(query, memory_text(game, "Pick one more tile."), memory_markup(game_id, game))
+            return
+        if int(first) == idx:
+            await query.answer("Pick a different tile.", show_alert=False)
+            return
+        game["turns"] = int(game.get("turns", 0)) + 1
+        if game["values"][int(first)] == game["values"][idx]:
+            game.setdefault("matched", []).extend([int(first), idx])
+            game["first"] = None
+            if len(game["matched"]) >= 8:
+                puzzle_games(context).pop(game_id, None)
+                db(context).upsert_user(user)
+                db(context).record_game_result(user.id, True)
+                await edit_query_message(query, f"Memory Match solved by {user_label(user)} in {game['turns']} turns.")
+                return
+            await edit_query_message(query, memory_text(game, "Matched. Nice."), memory_markup(game_id, game))
+            return
+        game["first"] = None
+        await edit_query_message(query, memory_text(game, "Not a pair. Try again."), memory_markup(game_id, game))
         return
     if len(parts) != 4 or parts[1] != "ans":
         await query.answer("Puzzle expired.", show_alert=True)
@@ -1247,6 +1758,12 @@ async def callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     data = query.data or ""
     if data == "noop":
         return
+    if data.startswith("guide:"):
+        await handle_guide(update, context, data)
+        return
+    if data.startswith("casino:"):
+        await handle_casino(update, context, data)
+        return
     if data.startswith("puzzle:"):
         await handle_puzzle(update, context, data)
         return
@@ -1311,6 +1828,22 @@ async def handle_join(update: Update, context: ContextTypes.DEFAULT_TYPE, match:
     match.teams["B"]["captain_id"] = int(user.id)
     match.teams["B"]["players"] = [new_player(user.id, name, True)]
     match.ready[str(user.id)] = False
+    if match.mode == "pvp":
+        match.teams["B"]["name"] = name
+        match.toss_winner = random.choice(["A", "B"])
+        match.phase = "toss"
+        toss_cap = match.teams[match.toss_winner]["captain_id"]
+        await edit_main(
+            context,
+            match,
+            "PVP players joined.\n\n"
+            f"Player A: {match.captains['A']['name']}\n"
+            f"Player B: {match.captains['B']['name']}\n\n"
+            f"Toss winner: {player_name(match, toss_cap)}. Choose Bat or Bowl.",
+            toss_markup(),
+        )
+        db(context).save_match(match)
+        return
     match.pending_action = {
         str(match.captains["A"]["id"]): {"type": "team_name", "team": "A"},
         str(match.captains["B"]["id"]): {"type": "team_name", "team": "B"},
@@ -1343,6 +1876,19 @@ async def handle_toss(update: Update, context: ContextTypes.DEFAULT_TYPE, match:
     else:
         match.batting_team, match.bowling_team = loser, winner
     match.innings_order = [match.batting_team, match.bowling_team]
+    if match.mode == "pvp":
+        match.current_batter_id = int(match.teams[match.batting_team]["captain_id"])
+        match.current_bowler_id = int(match.teams[match.bowling_team]["captain_id"])
+        bowler = get_player(match, match.current_bowler_id)
+        if bowler and not bowler.get("style"):
+            bowler["style"] = "pacer"
+        match.current_bowler_style = (bowler or {}).get("style") or "pacer"
+        ensure_match_player_stats(match)
+        match.phase = "awaiting_admin_approval"
+        await edit_main(context, match, scoreboard(match), admin_approval_markup())
+        await query.message.reply_text("PVP is ready. Waiting for group admin approval.", reply_markup=admin_approval_markup())
+        db(context).save_match(match)
+        return
     match.phase = "setup"
     reset_ready(match)
     ensure_match_player_stats(match)
@@ -1619,6 +2165,7 @@ async def handle_admin_start(update: Update, context: ContextTypes.DEFAULT_TYPE,
     if not await is_chat_admin(context, match.chat_id, user.id):
         await query.answer("Only a group admin can approve the match start.", show_alert=True)
         return
+    match.admin_approved_once = True
     match.phase = "playing"
     await query.message.reply_text(f"Admin {user_label(user)} approved the start. Game on.")
     await edit_main(context, match, scoreboard(match), bowling_markup(match))
@@ -1641,12 +2188,18 @@ async def handle_ready(update: Update, context: ContextTypes.DEFAULT_TYPE, match
         return
     match.ready[str(cap_id)] = True
     if all(match.ready.get(str(cid)) for cid in captain_ids(match)):
-        match.phase = "awaiting_admin_approval"
-        await edit_main(context, match, scoreboard(match), admin_approval_markup())
-        await query.message.reply_text(
-            "Both captains pressed Start. Waiting for a group admin to approve the match start.",
-            reply_markup=admin_approval_markup(),
-        )
+        if match.admin_approved_once or match.innings > 1:
+            match.admin_approved_once = True
+            match.phase = "playing"
+            await edit_main(context, match, scoreboard(match), bowling_markup(match))
+            await query.message.reply_text("Both captains are ready. Game resumes.")
+        else:
+            match.phase = "awaiting_admin_approval"
+            await edit_main(context, match, scoreboard(match), admin_approval_markup())
+            await query.message.reply_text(
+                "Both captains pressed Start. Waiting for a group admin to approve the match start.",
+                reply_markup=admin_approval_markup(),
+            )
     else:
         await save_and_show_setup(context, match)
     db(context).save_match(match)
@@ -2126,6 +2679,23 @@ async def finish_innings_or_match(context: ContextTypes.DEFAULT_TYPE, match: Mat
         match.target = first_runs + 1
         for player in match.teams[match.batting_team]["players"]:
             player["out"] = False
+        if match.mode == "pvp":
+            match.current_batter_id = int(match.teams[match.batting_team]["captain_id"])
+            match.current_bowler_id = int(match.teams[match.bowling_team]["captain_id"])
+            bowler = get_player(match, match.current_bowler_id)
+            if bowler and not bowler.get("style"):
+                bowler["style"] = "pacer"
+            match.current_bowler_style = (bowler or {}).get("style") or "pacer"
+            ensure_match_player_stats(match)
+            match.phase = "playing"
+            await context.bot.send_message(
+                match.chat_id,
+                f"INNINGS 2\n{team_name(match, match.batting_team)} need {match.target} runs in {match.overs * 6} balls.\n"
+                "PVP players are auto-selected. Game resumes.",
+            )
+            await edit_main(context, match, scoreboard(match), bowling_markup(match))
+            db(context).save_match(match)
+            return
         match.phase = "setup"
         reset_ready(match)
         await context.bot.send_message(
@@ -2190,7 +2760,10 @@ def run() -> None:
     application.bot_data["settings"] = cfg
     application.bot_data["puzzle_games"] = {}
 
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("playmatch", playmatch))
+    application.add_handler(CommandHandler("pvp", pvp))
     application.add_handler(CommandHandler("cancelmatch", cancelmatch))
     application.add_handler(CommandHandler("myteam", myteam))
     application.add_handler(CommandHandler("add", add_player))
@@ -2201,9 +2774,14 @@ def run() -> None:
     application.add_handler(CommandHandler("myprofile", myprofile))
     application.add_handler(CommandHandler("logs", logs))
     application.add_handler(CommandHandler("exp", exp))
+    application.add_handler(CommandHandler("guide", guide))
     application.add_handler(CommandHandler("games", games))
     application.add_handler(CommandHandler("puzzle", puzzle))
-    application.add_handler(CommandHandler("2048", game_2048))
+    application.add_handler(CommandHandler("spam", spam))
+    application.add_handler(CommandHandler("casino", casino))
+    application.add_handler(CommandHandler("bet", bet))
+    application.add_handler(CommandHandler("dice", dice))
+    application.add_handler(CommandHandler("roll", dice))
     application.add_handler(CallbackQueryHandler(callbacks))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_messages))
     application.add_error_handler(error_handler)
