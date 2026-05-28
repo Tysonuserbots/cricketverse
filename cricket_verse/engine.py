@@ -162,6 +162,24 @@ def next_extra(match: Match, style: str, code: int) -> str | None:
     return None
 
 
+def extra_probability_note(match: Match, style: str, code: int) -> str:
+    delivery = DELIVERIES_BY_STYLE[style][code]
+    counts = match.over_state["delivery_counts"]
+    code_key = str(code)
+    usage_after = int(counts.get(code_key, 0)) + 1
+    consecutive_after = int(match.over_state["consecutive"]) + 1 if match.over_state["last_code"] == code else 1
+    if usage_after >= 4:
+        return "4th use in this over: 80% no-ball, 20% wide."
+    if consecutive_after >= 3:
+        return "3rd same delivery in a row: 70% no-ball, 30% legal."
+    if consecutive_after == 2:
+        return "2nd same delivery in a row: 20% wide, 80% legal."
+    return (
+        f"Natural extras for {delivery.name}: {delivery.wide_pct}% wide, "
+        f"{delivery.no_ball_pct}% no-ball, {delivery.leg_bye_pct}% leg-bye."
+    )
+
+
 def register_delivery_use(match: Match, style: str, code: int) -> None:
     delivery = DELIVERIES_BY_STYLE[style][code]
     counts = match.over_state["delivery_counts"]
@@ -216,13 +234,33 @@ def wicket_check(match: Match, style: str, code: int, length_ok: bool, batter_ru
     return {"kind": "none"}
 
 
+def wicket_probability_note(match: Match, style: str, code: int, length_ok: bool, batter_run: int, wicket: dict[str, Any]) -> str:
+    delivery = DELIVERIES_BY_STYLE[style][code]
+    bfr_equals_br = int(code) == int(batter_run)
+    if bfr_equals_br and length_ok:
+        return "BFR = batter run and length matched: 30% Bowled/LBW/Stumped, 70% survives with batter runs."
+    if bfr_equals_br:
+        if in_powerplay(match):
+            return "BFR = batter run and length missed in powerplay: 50% Bowled/LBW/Stumped, 15% catch, 35% run out."
+        return "BFR = batter run and length missed: 50% Bowled/LBW/Stumped, 30% catch, 20% run out."
+    if not length_ok and delivery.catch_ball:
+        pct = 15 if in_powerplay(match) else 30
+        return f"BFR != batter run, catch-ball delivery, length missed: {pct}% type-2 catch chance."
+    if not length_ok:
+        return "BFR != batter run and length missed: runs come from the ball data/miss-length logic."
+    return "BFR != batter run and length matched: selected batter runs are safe."
+
+
 def make_pending_delivery(match: Match, style: str, code: int, batter_run: int, batter_length: str) -> dict[str, Any]:
     delivery = DELIVERIES_BY_STYLE[style][code]
     existing = match.pending_delivery or {}
     length = existing.get("actual_length") or choose_length(style, code)
     ok = length_matches(length, batter_length)
+    extra_note = extra_probability_note(match, style, code)
     extra = next_extra(match, style, code)
     register_delivery_use(match, style, code)
+    hard_slot = int(match.over_state.get("hard_slots", 0))
+    hard_limit = hard_ball_limit(match)
     return {
         "style": style,
         "code": code,
@@ -232,6 +270,21 @@ def make_pending_delivery(match: Match, style: str, code: int, batter_run: int, 
         "length_ok": ok,
         "batter_run": int(batter_run),
         "extra": extra,
+        "explain": {
+            "delivery": delivery.name,
+            "bowler_fixed_run": int(code),
+            "batter_run": int(batter_run),
+            "actual_length": length,
+            "batter_length": batter_length,
+            "length_ok": ok,
+            "extra": extra,
+            "extra_probability": extra_note,
+            "hard_ball": bool(delivery.hard or delivery.bouncer),
+            "hard_slot": hard_slot,
+            "hard_limit": hard_limit,
+            "powerplay": in_powerplay(match),
+            "free_hit_active": bool(match.over_state.get("free_hit", False)),
+        },
     }
 
 
@@ -257,6 +310,7 @@ def build_pending_catch(match: Match, wicket: dict[str, Any]) -> dict[str, Any] 
         "air_time": air_time,
         "drop_runs": CATCH_DROP_RUNS[air_time],
         "catch_type": int(wicket["catch_type"]),
+        "base_explain": match.pending_delivery.get("explain", {}),
     }
     match.pending_catch = pending
     match.phase = "catch_pending"
@@ -341,6 +395,7 @@ def resolve_pending_delivery(match: Match) -> dict[str, Any]:
     batter_run = int(data["batter_run"])
     extra = data["extra"]
     free_hit = bool(match.over_state.get("free_hit", False))
+    explain = dict(data.get("explain", {}))
 
     match.score["last_delivery"] = f"{delivery_name} Length {length} (bat: {batter_length})"
     match.score["last_length_ok"] = length_ok
@@ -363,6 +418,12 @@ def resolve_pending_delivery(match: Match) -> dict[str, Any]:
             "delivery": delivery_name,
             "length": length,
             "batter_length": batter_length,
+            "explain": {
+                **explain,
+                "outcome": "Wide",
+                "runs": 1,
+                "reason": "Wide adds 1 extra and does not count as a legal ball, so the ball is rebowled.",
+            },
         }
 
     if extra == "leg_bye":
@@ -384,6 +445,12 @@ def resolve_pending_delivery(match: Match) -> dict[str, Any]:
             "delivery": delivery_name,
             "length": length,
             "batter_length": batter_length,
+            "explain": {
+                **explain,
+                "outcome": "Leg bye",
+                "runs": 1,
+                "reason": "Leg bye from natural extras. It counts as a legal ball and one extra run.",
+            },
         }
 
     bat_runs = score_runs_for_ball(match, style, code, length, batter_run, length_ok)
@@ -411,6 +478,12 @@ def resolve_pending_delivery(match: Match) -> dict[str, Any]:
             "length": length,
             "batter_length": batter_length,
             "free_hit_next": True,
+            "explain": {
+                **explain,
+                "outcome": "No ball",
+                "runs": total,
+                "reason": "No-ball adds 1 extra, does not count as a legal ball, and sets a free hit for the next legal ball.",
+            },
         }
 
     if free_hit:
@@ -425,10 +498,20 @@ def resolve_pending_delivery(match: Match) -> dict[str, Any]:
             "batter_length": batter_length,
             "length_ok": length_ok,
             "free_hit": True,
+            "explain": {
+                **explain,
+                "outcome": "Free hit runs",
+                "runs": bat_runs,
+                "reason": "Free hit was active, so normal wicket checks were skipped and only the run/length logic applied.",
+            },
         }
 
     wicket = wicket_check(match, style, code, length_ok, batter_run)
     if wicket["kind"] == "catch":
+        explain["wicket_probability"] = wicket_probability_note(match, style, code, length_ok, batter_run, wicket)
+        explain["outcome"] = "Catch chance"
+        explain["reason"] = "Catch chance triggered from the wicket system. Fielder result decides OUT or drop runs."
+        match.pending_delivery["explain"] = explain
         pending = build_pending_catch(match, wicket)
         if pending:
             return {"status": "catch_pending", "pending": pending}
@@ -450,6 +533,14 @@ def resolve_pending_delivery(match: Match) -> dict[str, Any]:
             "length": length,
             "batter_length": batter_length,
             "length_ok": length_ok,
+            "explain": {
+                **explain,
+                "outcome": "Run out",
+                "runs": 0,
+                "wicket_type": "Run Out",
+                "wicket_probability": wicket_probability_note(match, style, code, length_ok, batter_run, wicket),
+                "reason": "Run out triggered from the wicket bucket and is a direct wicket.",
+            },
         }
 
     if wicket["kind"] == "direct":
@@ -476,6 +567,14 @@ def resolve_pending_delivery(match: Match) -> dict[str, Any]:
             "drs_team": batting_team,
             "batter_id": batter_id,
             "bowler_id": bowler_id,
+            "explain": {
+                **explain,
+                "outcome": wicket["wicket_type"],
+                "runs": 0,
+                "wicket_type": wicket["wicket_type"],
+                "wicket_probability": wicket_probability_note(match, style, code, length_ok, batter_run, wicket),
+                "reason": f"{wicket['wicket_type']} triggered from the direct wicket bucket.",
+            },
         }
 
     apply_ball(match, bat_runs=bat_runs, legal=True, timeline_token=str(bat_runs))
@@ -487,6 +586,17 @@ def resolve_pending_delivery(match: Match) -> dict[str, Any]:
         "length": length,
         "batter_length": batter_length,
         "length_ok": length_ok,
+        "explain": {
+            **explain,
+            "outcome": "Runs",
+            "runs": bat_runs,
+            "reason": (
+                "Length matched, so batter selected runs were awarded."
+                if length_ok
+                else "Length missed, so runs came from miss-length/MLR logic."
+            ),
+            "wicket_probability": wicket_probability_note(match, style, code, length_ok, batter_run, wicket),
+        },
     }
 
 
@@ -508,6 +618,13 @@ def finish_catch(match: Match, guess: int | None) -> dict[str, Any]:
             "status": "out",
             "fielder_name": pending["fielder_name"],
             "catch_type": pending["catch_type"],
+            "explain": {
+                **dict(pending.get("base_explain", {})),
+                "outcome": "Catch Out",
+                "runs": 0,
+                "wicket_type": "Catch Out",
+                "reason": f"{pending['fielder_name']} guessed the batter number correctly, so the catch chance became OUT.",
+            },
         }
     else:
         drop_runs = int(pending["drop_runs"])
@@ -525,6 +642,16 @@ def finish_catch(match: Match, guess: int | None) -> dict[str, Any]:
             "fielder_name": pending["fielder_name"],
             "runs": drop_runs,
             "timeout": guess is None,
+            "explain": {
+                **dict(pending.get("base_explain", {})),
+                "outcome": "Drop catch",
+                "runs": drop_runs,
+                "reason": (
+                    f"Catch timed out, so {drop_runs} drop-run(s) were added."
+                    if guess is None
+                    else f"Wrong catch guess, so {drop_runs} drop-run(s) were added from air time."
+                ),
+            },
         }
     match.pending_catch = None
     match.pending_delivery = None

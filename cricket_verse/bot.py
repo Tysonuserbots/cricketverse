@@ -121,6 +121,56 @@ def use_captain_change(match: Match, cap_id: int) -> int:
     return captain_changes_left(match, cap_id)
 
 
+def append_button_log(match: Match, user: Any, role: str, action: str, value: str) -> None:
+    log = {
+        "innings": match.innings,
+        "over": overs_text(match.score.get("legal_balls", 0)),
+        "role": role,
+        "player": user_label(user),
+        "user_id": int(user.id),
+        "action": action,
+        "value": value,
+    }
+    match.button_logs.append(log)
+    if len(match.button_logs) > 120:
+        match.button_logs = match.button_logs[-120:]
+
+
+def logs_text(match: Match, limit: int) -> str:
+    logs = match.button_logs[-limit:]
+    if not logs:
+        return "No batter/bowler button logs yet."
+    lines = [f"Last {len(logs)} button log(s):"]
+    for idx, item in enumerate(logs, start=1):
+        lines.append(
+            f"{idx}. Inn {item.get('innings')} {item.get('over')} ov - "
+            f"{item.get('role')} {item.get('player')} pressed {item.get('action')}: {item.get('value')}"
+        )
+    return "\n".join(lines)
+
+
+def explanation_text(match: Match) -> str:
+    exp = match.score.get("last_explanation")
+    if not exp:
+        return "No completed ball explanation yet."
+    lines = [
+        "Last ball explanation",
+        f"Delivery: {exp.get('delivery')} | BFR: {exp.get('bowler_fixed_run')} | Batter run: {exp.get('batter_run')}",
+        f"Length: actual {exp.get('actual_length')} vs batter {exp.get('batter_length')} - {'matched' if exp.get('length_ok') else 'missed'}",
+        f"Outcome: {exp.get('outcome')} | Runs: {exp.get('runs', 0)}",
+        f"Reason: {exp.get('reason')}",
+    ]
+    if exp.get("hard_ball"):
+        lines.append(f"Hard-ball slot: {exp.get('hard_slot')}/{exp.get('hard_limit')} ({'powerplay' if exp.get('powerplay') else 'normal over'})")
+    if exp.get("extra_probability"):
+        lines.append(f"Extra probability: {exp.get('extra_probability')}")
+    if exp.get("wicket_probability"):
+        lines.append(f"Wicket probability: {exp.get('wicket_probability')}")
+    if exp.get("free_hit_active"):
+        lines.append("Free hit was active before this ball.")
+    return "\n".join(lines)
+
+
 def reset_ready(match: Match) -> None:
     match.ready = {str(cid): False for cid in captain_ids(match)}
 
@@ -620,6 +670,32 @@ async def myprofile(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(profile_text(profile))
 
 
+async def logs(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not update.effective_chat or not update.effective_user or not update.message:
+        return
+    if not await is_chat_admin(context, update.effective_chat.id, update.effective_user.id):
+        await update.message.reply_text("Only group admins can use /logs.")
+        return
+    match = active_match(context, update.effective_chat.id)
+    if not match:
+        await update.message.reply_text("No active match in this chat.")
+        return
+    limit = 10
+    if context.args and context.args[0].isdigit():
+        limit = max(1, min(50, int(context.args[0])))
+    await update.message.reply_text(logs_text(match, limit))
+
+
+async def exp(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not update.effective_chat or not update.message:
+        return
+    match = active_match(context, update.effective_chat.id)
+    if not match:
+        await update.message.reply_text("/exp works only during a live match.")
+        return
+    await update.message.reply_text(explanation_text(match))
+
+
 def puzzle_games(context: ContextTypes.DEFAULT_TYPE) -> dict[str, dict[str, Any]]:
     return context.application.bot_data.setdefault("puzzle_games", {})
 
@@ -634,6 +710,7 @@ async def games(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 [InlineKeyboardButton("Number Lock", callback_data="puzzle:start:math")],
                 [InlineKeyboardButton("Pattern Chase", callback_data="puzzle:start:sequence")],
                 [InlineKeyboardButton("Cricket Brain", callback_data="puzzle:start:cricket")],
+                [InlineKeyboardButton("2048", callback_data="puzzle:start:2048")],
             ]
         ),
     )
@@ -641,6 +718,15 @@ async def games(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 async def puzzle(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await games(update, context)
+
+
+async def game_2048(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not update.message:
+        return
+    game_id = f"{random.randint(1000, 9999)}{random.randint(1000, 9999)}"
+    board = new_2048_board()
+    puzzle_games(context)[game_id] = {"type": "2048", "board": board, "score": 0}
+    await update.message.reply_text(render_2048(board), reply_markup=markup_2048(game_id))
 
 
 def make_puzzle(kind: str) -> dict[str, Any]:
@@ -676,7 +762,107 @@ def make_puzzle(kind: str) -> dict[str, Any]:
     return {"question": question, "options": [str(item) for item in option_list], "answer": option_list.index(answer)}
 
 
+def new_2048_board() -> list[list[int]]:
+    board = [[0 for _ in range(4)] for _ in range(4)]
+    add_2048_tile(board)
+    add_2048_tile(board)
+    return board
+
+
+def add_2048_tile(board: list[list[int]]) -> None:
+    empty = [(r, c) for r in range(4) for c in range(4) if board[r][c] == 0]
+    if not empty:
+        return
+    r, c = random.choice(empty)
+    board[r][c] = 4 if random.randint(1, 10) == 1 else 2
+
+
+def merge_2048_line(line: list[int]) -> tuple[list[int], int]:
+    values = [value for value in line if value]
+    merged: list[int] = []
+    gained = 0
+    idx = 0
+    while idx < len(values):
+        if idx + 1 < len(values) and values[idx] == values[idx + 1]:
+            value = values[idx] * 2
+            merged.append(value)
+            gained += value
+            idx += 2
+        else:
+            merged.append(values[idx])
+            idx += 1
+    return merged + [0] * (4 - len(merged)), gained
+
+
+def move_2048(board: list[list[int]], direction: str) -> tuple[list[list[int]], bool, int]:
+    new_board = [row[:] for row in board]
+    gained = 0
+    if direction in {"L", "R"}:
+        for r in range(4):
+            row = new_board[r][:]
+            if direction == "R":
+                row.reverse()
+            merged, score = merge_2048_line(row)
+            if direction == "R":
+                merged.reverse()
+            new_board[r] = merged
+            gained += score
+    else:
+        for c in range(4):
+            col = [new_board[r][c] for r in range(4)]
+            if direction == "D":
+                col.reverse()
+            merged, score = merge_2048_line(col)
+            if direction == "D":
+                merged.reverse()
+            for r in range(4):
+                new_board[r][c] = merged[r]
+            gained += score
+    changed = new_board != board
+    if changed:
+        add_2048_tile(new_board)
+    return new_board, changed, gained
+
+
+def has_2048_moves(board: list[list[int]]) -> bool:
+    if any(0 in row for row in board):
+        return True
+    for r in range(4):
+        for c in range(4):
+            if r + 1 < 4 and board[r][c] == board[r + 1][c]:
+                return True
+            if c + 1 < 4 and board[r][c] == board[r][c + 1]:
+                return True
+    return False
+
+
+def render_2048(board: list[list[int]], score: int = 0) -> str:
+    rows = []
+    for row in board:
+        rows.append(" | ".join(f"{value or '.':>4}" for value in row))
+    return f"2048 Cricket Puzzle\nScore: {score}\n" + "\n".join(rows)
+
+
+def markup_2048(game_id: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton("Up", callback_data=f"puzzle:2048:{game_id}:U")],
+            [
+                InlineKeyboardButton("Left", callback_data=f"puzzle:2048:{game_id}:L"),
+                InlineKeyboardButton("Right", callback_data=f"puzzle:2048:{game_id}:R"),
+            ],
+            [InlineKeyboardButton("Down", callback_data=f"puzzle:2048:{game_id}:D")],
+        ]
+    )
+
+
 async def start_puzzle_from_query(query: Any, context: ContextTypes.DEFAULT_TYPE, kind: str) -> None:
+    if kind == "2048":
+        game_id = f"{random.randint(1000, 9999)}{random.randint(1000, 9999)}"
+        board = new_2048_board()
+        puzzle_games(context)[game_id] = {"type": "2048", "board": board, "score": 0}
+        await edit_query_message(query, render_2048(board), markup_2048(game_id))
+        return
     puzzle_id = f"{random.randint(1000, 9999)}{random.randint(1000, 9999)}"
     puzzle_data = make_puzzle(kind)
     puzzle_games(context)[puzzle_id] = puzzle_data
@@ -699,6 +885,36 @@ async def handle_puzzle(update: Update, context: ContextTypes.DEFAULT_TYPE, data
     parts = data.split(":")
     if len(parts) >= 3 and parts[1] == "start":
         await start_puzzle_from_query(query, context, parts[2])
+        return
+    if len(parts) == 4 and parts[1] == "2048":
+        game_id = parts[2]
+        direction = parts[3]
+        game = puzzle_games(context).get(game_id)
+        if not game or game.get("type") != "2048":
+            await query.answer("2048 board expired.", show_alert=True)
+            return
+        if direction not in {"U", "D", "L", "R"}:
+            await query.answer("Bad move.", show_alert=True)
+            return
+        board, changed, gained = move_2048(game["board"], direction)
+        if not changed:
+            await query.answer("No tiles moved.", show_alert=True)
+            return
+        game["board"] = board
+        game["score"] = int(game.get("score", 0)) + int(gained)
+        if any(value >= 2048 for row in board for value in row):
+            puzzle_games(context).pop(game_id, None)
+            db(context).upsert_user(user)
+            db(context).record_game_result(user.id, True)
+            await edit_query_message(query, f"{render_2048(board, game['score'])}\n\n2048 made by {user_label(user)}. Big brain innings.")
+            return
+        if not has_2048_moves(board):
+            puzzle_games(context).pop(game_id, None)
+            db(context).upsert_user(user)
+            db(context).record_game_result(user.id, False)
+            await edit_query_message(query, f"{render_2048(board, game['score'])}\n\nGame over. The board defended like prime death bowling.")
+            return
+        await edit_query_message(query, render_2048(board, game["score"]), markup_2048(game_id))
         return
     if len(parts) != 4 or parts[1] != "ans":
         await query.answer("Puzzle expired.", show_alert=True)
@@ -1471,6 +1687,7 @@ async def handle_bowl(update: Update, context: ContextTypes.DEFAULT_TYPE, match:
     if delivery.bouncer and int(match.over_state.get("bouncers", 0)) >= 2:
         await query.answer("Bouncer option is locked after 2 bouncers.", show_alert=True)
         return
+    append_button_log(match, user, "Bowler", "delivery", delivery_label(style, code))
     actual_length = choose_length(style, code)
     match.pending_delivery = {
         "style": style,
@@ -1499,6 +1716,7 @@ async def handle_bat(update: Update, context: ContextTypes.DEFAULT_TYPE, match: 
     if int(user.id) != int(match.current_batter_id or 0):
         await answer_not_you(query, player_name(match, match.current_batter_id))
         return
+    append_button_log(match, user, "Batter", "run", str(run))
     match.pending_delivery["batter_run"] = int(run)
     match.phase = "awaiting_batter_length"
     db(context).save_match(match)
@@ -1526,6 +1744,7 @@ async def handle_length(update: Update, context: ContextTypes.DEFAULT_TYPE, matc
             await query.answer("Bouncer length is already used by the batter this over.", show_alert=True)
             return
         match.over_state["batter_bouncers"] = int(match.over_state.get("batter_bouncers", 0)) + 1
+    append_button_log(match, user, "Batter", "length", length)
     style = match.pending_delivery["style"]
     code = int(match.pending_delivery["code"])
     run = int(match.pending_delivery["batter_run"])
@@ -1715,6 +1934,8 @@ def catch_result_text(result: dict[str, Any]) -> str:
 
 
 async def post_ball(context: ContextTypes.DEFAULT_TYPE, match: Match, result: dict[str, Any]) -> None:
+    if result.get("explain"):
+        match.score["last_explanation"] = result["explain"]
     commentary = event_commentary(match, result)
     review_team = result.get("drs_team")
     reviewable = bool(result.get("reviewable")) and result.get("wicket_type") in {"LBW", "Stumped"}
@@ -1978,8 +2199,11 @@ def run() -> None:
     application.add_handler(CommandHandler("buzz", buzz))
     application.add_handler(CommandHandler("matchin", matchin))
     application.add_handler(CommandHandler("myprofile", myprofile))
+    application.add_handler(CommandHandler("logs", logs))
+    application.add_handler(CommandHandler("exp", exp))
     application.add_handler(CommandHandler("games", games))
     application.add_handler(CommandHandler("puzzle", puzzle))
+    application.add_handler(CommandHandler("2048", game_2048))
     application.add_handler(CallbackQueryHandler(callbacks))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_messages))
     application.add_error_handler(error_handler)
